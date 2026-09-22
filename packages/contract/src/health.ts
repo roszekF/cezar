@@ -35,8 +35,28 @@ export const forgeInfoSchema = z.object({
 });
 export type ForgeInfo = z.infer<typeof forgeInfoSchema>;
 
+/**
+ * Docker Sandboxes (`sbx`) on this host (spec `.ai/specs/2026-09-22-docker-sandboxes.md`).
+ * Detected passively — `sbx version --json` once per process, which never starts the sandbox
+ * daemon — so sign-in state is NOT known here; it surfaces when a sandboxed run starts.
+ */
+export const sandboxCapabilitySchema = z.object({
+  provider: z.literal('docker-sbx'),
+  /** `unsupported-version`: `sbx` is installed but older than cezar needs, or lacks a flag it relies on. */
+  state: z.enum(['available', 'unsupported-version']),
+  version: z.string().optional(),
+  /** Agent backends a sandboxed run may use. */
+  backends: z.array(z.enum(['claude', 'codex'])),
+});
+export type SandboxCapability = z.infer<typeof sandboxCapabilitySchema>;
+
 /** Server-side feature switches the cockpit reads once at boot. */
 export const capabilitiesSchema = z.object({
+  /**
+   * Absent when `sbx` is not installed or `CEZ_SANDBOX=0` — the composer then shows no Sandbox
+   * toggle at all. OPTIONAL because it is the one capability that depends on the host, not the env.
+   */
+  sandbox: sandboxCapabilitySchema.optional(),
   localHandoff: z.boolean(),
   followups: z.boolean(),
   singleProject: z.boolean(),

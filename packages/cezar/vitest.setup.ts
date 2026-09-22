@@ -14,6 +14,11 @@ import { afterAll, afterEach, beforeEach } from 'vitest'
 // deletes the variable inside its own body (see `src/paths.test.ts`) — that still
 // works, because this hook runs after the test, not during it. The write guard in
 // `assertCezarHomeWriteIsSandboxed` catches whatever still slips through.
+// The health payload carries `capabilities.sandbox` only when a real `sbx` is on PATH, so
+// without this the suite's health assertions would depend on what the developer happens to
+// have installed. Sandbox tests opt back in with their own env (docker-sbx.test.ts).
+process.env.CEZ_SANDBOX ??= '0'
+
 const sandboxHome = mkdtempSync(join(realpathSync(tmpdir()), 'cez-vitest-home-'))
 
 const pinSandboxHome = (): void => {

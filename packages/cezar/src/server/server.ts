@@ -49,6 +49,7 @@ import {
 } from '@open-mercato/cezar-contract';
 import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
+import { detectSandboxCached } from '../core/sandbox/docker-sbx.ts';
 import { RUNNER_IDS } from '../core/agent-runner.ts';
 import type { ContentBlock } from '../core/agent-runner.ts';
 import { AGENT_MODELS_LOCKED_ERROR, agentModelsLocked } from '../core/agent-model-policy.ts';
@@ -1539,11 +1540,13 @@ export function createApp(deps: ServerDeps) {
   // back as if the server had proven it. Inferring here means the route says what it actually
   // sends, which is what lets the DTO be derived instead of maintained.
   const healthSnapshot = async () => {
-    const [checks, repo, config, workspace] = await Promise.all([
+    const [checks, repo, config, workspace, sandbox] = await Promise.all([
       detectEnvironment(),
       getRepoInfo(bootRoot),
       loadConfig(bootRoot),
       workspaceSummary(),
+      // Memoized per process and passive (never starts the sbx daemon) — see docker-sbx.ts.
+      detectSandboxCached(),
     ]);
     // Additive fields only below — the pre-forge shape is the most
     // externally-depended-on JSON in the app (BACKWARD_COMPATIBILITY.md §2).
@@ -1571,7 +1574,8 @@ export function createApp(deps: ServerDeps) {
       // Non-blocking: cached availability or null-until-warm — health must never pay a `gh`
       // shell-out (the bookmarklet aborts its port probe at 800 ms). See detectGithubCached.
       forge: forge ? { kind: forge.kind, ...(forge.detectCached() ?? {}) } : null,
-      capabilities: caps,
+      // `sandbox` is spread in only when detected: absent, not `undefined`, on the wire.
+      capabilities: sandbox ? { ...caps, sandbox } : caps,
       // Workspace enumeration (multi-project spec) — additive, id+name ONLY.
       // NEVER `projects[].root` here: health is the one CORS-open route, and
       // the repoRoot trim above exists precisely to keep absolute paths and

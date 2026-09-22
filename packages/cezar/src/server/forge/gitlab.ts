@@ -653,8 +653,12 @@ const glMrDetailSchema = z.object({
 });
 type GlMrDetail = z.infer<typeof glMrDetailSchema>;
 
-async function fetchGitlabMrDetail(repoRoot: string, iid: number): Promise<GlMrDetail> {
-  const out = await glab(repoRoot, ['api', `projects/:fullpath/merge_requests/${iid}`], 10_000);
+/** One MR detail call's own ceiling. `listChecks` hands it whatever is left of the fan-out's
+ *  shared budget instead, whichever is smaller. */
+const MR_DETAIL_TIMEOUT_MS = 10_000;
+
+async function fetchGitlabMrDetail(repoRoot: string, iid: number, timeoutMs = MR_DETAIL_TIMEOUT_MS): Promise<GlMrDetail> {
+  const out = await glab(repoRoot, ['api', `projects/:fullpath/merge_requests/${iid}`], timeoutMs);
   return glMrDetailSchema.parse(JSON.parse(out));
 }
 
@@ -698,6 +702,15 @@ async function mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) =>
 
 const CHECKS_CONCURRENCY = 5;
 
+/** ONE deadline for the WHOLE checks fan-out — the same budget every other multi-call GitLab path
+ *  runs under (`fetchBoundedPages`). Without it, `GH_CHECKS_MAX` (100) per-MR calls each carried
+ *  their own ~10 s timeout and nothing shared, so a slow instance could hold `GET /github/checks`
+ *  open for minutes and spawn 100 `glab` processes. */
+const CHECKS_BUDGET_MS = TIMELINE_BUDGET_MS;
+/** Never spawn a detail call that cannot finish — the same reasoning as `TIMELINE_MIN_PAGE_MS`:
+ *  a 300 ms timeout throws and is indistinguishable from a real endpoint failure. */
+const CHECKS_MIN_CALL_MS = TIMELINE_MIN_PAGE_MS;
+
 /** Per-MR checks cache: keyed `repoRoot\0iid`, same TTL as GitHub's checks cache (`CACHE_MS`) —
  *  its own `Map`, since `github.ts`'s `checksCache` is module-private. */
 const checksCache = new Map<string, { at: number; glyph: ForgeChecksGlyph }>();
@@ -721,6 +734,11 @@ function mockGitlabChecks(numbers: number[]): ForgeChecksData {
  * the FIRST uncached MR is treated as `glab` itself being unusable (missing, unauthenticated,
  * offline) rather than one MR being unreadable, and answers `{available:false, reason}` instead of
  * a checks map with one silently missing entry.
+ *
+ * The whole fan-out runs under ONE deadline (`CHECKS_BUDGET_MS`), like every other multi-call
+ * GitLab path: once it passes, no further detail call is issued and the glyphs resolved so far are
+ * returned. That is not a lie by omission — `ForgeChecksData`'s contract is that a number the
+ * forge did not answer for is simply ABSENT, which the rows already render as "nothing is known".
  */
 async function fetchGitlabChecks(repoRoot: string, numbers: number[]): Promise<ForgeChecksData> {
   if (process.env.CEZ_DRY_RUN === '1') return mockGitlabChecks(numbers);
@@ -742,16 +760,24 @@ async function fetchGitlabChecks(repoRoot: string, numbers: number[]): Promise<F
     checksCache.set(`${repoRoot}\0${n}`, { at: now, glyph });
   };
 
+  // One deadline for every call below, counted from the same `now` the cache lookup used.
+  const deadline = now + CHECKS_BUDGET_MS;
+  const remaining = (): number => deadline - Date.now();
+
   const [first, ...rest] = misses;
   try {
-    remember(first!, pipelineGlyph((await fetchGitlabMrDetail(repoRoot, first!)).head_pipeline?.status));
+    remember(first!, pipelineGlyph((await fetchGitlabMrDetail(repoRoot, first!, Math.min(MR_DETAIL_TIMEOUT_MS, remaining()))).head_pipeline?.status));
   } catch (err) {
     return { available: false, reason: isNotFound(err) ? GLAB_NOT_FOUND_REASON : glabFailureReason(err) };
   }
 
   await mapWithConcurrency(rest, CHECKS_CONCURRENCY, async (n) => {
+    // Past the shared deadline the remaining MRs are dropped rather than queued: their glyphs stay
+    // absent, which is exactly what "nothing is known" looks like in this payload.
+    const left = remaining();
+    if (left < CHECKS_MIN_CALL_MS) return;
     try {
-      remember(n, pipelineGlyph((await fetchGitlabMrDetail(repoRoot, n)).head_pipeline?.status));
+      remember(n, pipelineGlyph((await fetchGitlabMrDetail(repoRoot, n, Math.min(MR_DETAIL_TIMEOUT_MS, left))).head_pipeline?.status));
     } catch {
       // A single MR failing costs only its own glyph — mirrors `fetchPrChecks`'s per-chunk degrade.
     }

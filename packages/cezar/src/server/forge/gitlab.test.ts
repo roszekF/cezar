@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { THREAD_ENTRY_CAP, TIMELINE_EVENT_CAP } from './github.ts';
+import { THREAD_ENTRY_CAP, TIMELINE_BUDGET_MS, TIMELINE_EVENT_CAP, TIMELINE_MIN_PAGE_MS } from './github.ts';
 
 // Same technique as github.test.ts: `glab()` builds its runner from `promisify(execFile)` at module
 // load, so every probe below is driven through this mock — no real `glab` on the box, no network.
@@ -824,10 +824,12 @@ type MrHandler = string | { fail: string };
  *  projects/:fullpath/merge_requests/:iid` to `details[iid]`, by inspecting the call's own args —
  *  same technique as `routeGlab`/`routeGlabApi` above. An MR id with no handler answers glab's own
  *  404 line, matching what `glab api` prints for an id that doesn't exist. */
-function routeGlabMr(handlers: { mrList?: MrHandler; details?: Record<number, MrHandler> }) {
+function routeGlabMr(handlers: { mrList?: MrHandler; details?: Record<number, MrHandler>; advanceMs?: number }) {
   execFileMock.mockImplementation((...callArgs: unknown[]) => {
     const cliArgs = callArgs[1] as string[];
     const cb = callArgs[callArgs.length - 1] as Callback;
+    // A slow instance, on the fake clock: every call costs `advanceMs` of the fan-out's budget.
+    if (handlers.advanceMs) vi.setSystemTime(Date.now() + handlers.advanceMs);
     const respond = (handler: MrHandler | undefined, notFoundStderr: string) => {
       if (handler === undefined) {
         cb(Object.assign(new Error(`Command failed: glab ${cliArgs.join(' ')}`), { code: 1, stderr: `${notFoundStderr}\n` }));
@@ -975,6 +977,67 @@ describe('GitLab driver — listChecks', () => {
     const driver = createGitlabDriver(freshRoot(), parsed());
     expect(await driver.listChecks!([1, 2])).toEqual({ available: true, checks: { 1: 'passing', 2: null } });
     expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  // The fan-out has ONE deadline, like every other multi-call GitLab path (`fetchBoundedPages`).
+  // Before it, `GH_CHECKS_MAX` (100) detail calls each carried their own ~10 s timeout with nothing
+  // shared, so a slow instance could hold `GET /github/checks` open for minutes.
+  describe('shared deadline', () => {
+    const NUMBERS = Array.from({ length: 40 }, (_, i) => i + 1);
+    const allDetails = (): Record<number, MrHandler> =>
+      Object.fromEntries(NUMBERS.map((n) => [n, mrDetail('success')] as const));
+
+    beforeEach(() => {
+      // Only Date: the fan-out awaits real promises, and faking timers wholesale would stall them.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(0);
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it('stops issuing detail calls at the budget and returns the glyphs resolved so far', async () => {
+      const perCall = TIMELINE_MIN_PAGE_MS; // a deliberately slow instance
+      routeGlabMr({ details: allDetails(), advanceMs: perCall });
+      const driver = createGitlabDriver(freshRoot(), parsed());
+      const data = await driver.listChecks!(NUMBERS);
+
+      expect(data.available).toBe(true);
+      if (!data.available) throw new Error('expected available');
+      const resolved = Object.keys(data.checks);
+      // Partial, not empty and not everything — the rows whose glyph never came back are simply
+      // ABSENT from the map, which is `ForgeChecksData`'s "nothing is known".
+      expect(resolved.length).toBeGreaterThan(0);
+      expect(resolved.length).toBeLessThan(NUMBERS.length);
+      for (const key of resolved) expect(NUMBERS).toContain(Number(key));
+      // One `glab` process per resolved glyph — the rest were never spawned.
+      expect(execFileMock.mock.calls.length).toBe(resolved.length);
+      // And the whole fan-out fits the budget, give or take the call that was in flight when it ran
+      // out — never `numbers.length * 10 s`.
+      expect(Date.now()).toBeLessThanOrEqual(TIMELINE_BUDGET_MS + perCall);
+    });
+
+    it('hands each call the smaller of its own ceiling and what is left of the budget', async () => {
+      routeGlabMr({ details: allDetails(), advanceMs: TIMELINE_MIN_PAGE_MS });
+      const driver = createGitlabDriver(freshRoot(), parsed());
+      await driver.listChecks!(NUMBERS);
+      const timeouts = execFileMock.mock.calls.map((call: unknown[]) => (call[2] as { timeout?: number }).timeout ?? 0);
+      expect(timeouts.length).toBeGreaterThan(1);
+      for (const timeout of timeouts) {
+        expect(timeout).toBeGreaterThanOrEqual(TIMELINE_MIN_PAGE_MS);
+        expect(timeout).toBeLessThanOrEqual(10_000); // MR_DETAIL_TIMEOUT_MS, the per-call ceiling
+      }
+      // Monotonically non-increasing: every call shares one shrinking budget.
+      expect([...timeouts].sort((a: number, b: number) => b - a)).toEqual(timeouts);
+    });
+
+    it('leaves the fast path untouched — a responsive instance resolves every glyph', async () => {
+      routeGlabMr({ details: allDetails(), advanceMs: 5 });
+      const driver = createGitlabDriver(freshRoot(), parsed());
+      const data = await driver.listChecks!(NUMBERS);
+      expect(data.available).toBe(true);
+      if (!data.available) throw new Error('expected available');
+      expect(Object.keys(data.checks)).toHaveLength(NUMBERS.length);
+      expect(Object.values(data.checks).every((glyph) => glyph === 'passing')).toBe(true);
+    });
   });
 });
 

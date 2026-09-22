@@ -54,7 +54,7 @@
 | 4 | 4.5-review-fix | Escape every regex metacharacter in bookmarklet hosts | dispatch | done | pending |
 | 4 | 4.6-review-fix | Keep GitHub-event automations on github.com only | dispatch | done | pending |
 | 4 | 4.3-review-fix | Keep the glab probe off the health request path | dispatch | done | pending |
-| 3 | 3.4-review-fix | Bound the GitLab checks fan-out with one deadline | dispatch | todo | — |
+| 3 | 3.4-review-fix | Bound the GitLab checks fan-out with one deadline | dispatch | done | pending |
 | 2 | 2.2-review-fix | Load the discovery cache before the first request | dispatch | todo | — |
 
 ## Goal

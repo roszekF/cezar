@@ -320,7 +320,7 @@ describe('composerRunModeNote (#793)', () => {
 
 describe('resolveSandboxToggle (spec 2026-09-22-docker-sandboxes)', () => {
   const capability = { state: 'available', version: 'v0.45.0', backends: ['claude', 'codex'] }
-  const base = { capability, hasGit: true, worktreeOn: true, runner: 'claude', agentProfile: null, dispatchOn: false }
+  const base = { capability, hasGit: true, runner: 'claude', agentProfile: null, dispatchOn: false }
 
   it('is hidden without the capability and enabled for a qualifying run', () => {
     expect(resolveSandboxToggle({ ...base, capability: undefined })).toEqual({ shown: false })
@@ -331,7 +331,6 @@ describe('resolveSandboxToggle (spec 2026-09-22-docker-sandboxes)', () => {
   it.each([
     [{ capability: { ...capability, state: 'unsupported-version' } }, /not supported/],
     [{ hasGit: false }, /git repository/],
-    [{ worktreeOn: false }, /need a worktree/],
     [{ runner: 'opencode' }, /Claude and Codex only/],
     [{ agentProfile: 'work' }, /sandbox login/],
     [{ dispatchOn: true }, /cannot dispatch/],

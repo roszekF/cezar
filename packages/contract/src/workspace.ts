@@ -35,6 +35,9 @@ export const workspaceConfigResponseSchema = z.object({
   effectiveSkillsAutoUpdate: z.boolean(),
   composerDefaults: z.object({
     autonomous: z.boolean().nullable(),
+    /** Sandbox new tasks by default (spec 2026-09-22-docker-sandboxes). `null` = no opinion =
+     *  off. Only ever applies where the server found `sbx`; elsewhere the toggle is absent. */
+    sandbox: z.boolean().nullable(),
     worktree: z.boolean().nullable(),
     /** `'source-dependent'` when no `CEZ_AUTONOMOUS_DEFAULT` pins it either way. */
     inheritedAutonomous: z.union([z.boolean(), z.literal('source-dependent')]),
@@ -83,6 +86,7 @@ export const setWorkspaceConfigInputSchema = z.object({
   composerDefaults: z
     .object({
       autonomous: z.boolean().nullable().optional(),
+      sandbox: z.boolean().nullable().optional(),
       worktree: z.boolean().nullable().optional(),
     })
     .optional(),

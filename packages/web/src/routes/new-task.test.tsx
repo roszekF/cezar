@@ -160,6 +160,7 @@ const WORKSPACE_CONFIG: WorkspaceConfigResponse = {
   effectiveSkillsAutoUpdate: true,
   composerDefaults: {
     autonomous: null,
+    sandbox: null,
     worktree: null,
     inheritedAutonomous: 'source-dependent',
     inheritedWorktree: true,
@@ -2512,13 +2513,40 @@ describe('the Sandbox toggle', () => {
     expect(postedBody()).toMatchObject({ sandbox: true })
   })
 
-  it('is disabled with the reason when the worktree is off', async () => {
+  it('moves with the Worktree toggle: on turns Worktree on, Worktree off turns it off', async () => {
     serve({ health: HEALTH_SBX })
     renderNewTask()
     await pillReady()
+    const worktree = () => document.querySelector('[data-slot="worktree-toggle"]') as HTMLButtonElement
     await waitFor(() => expect(sandboxToggle()).not.toBeNull())
-    fireEvent.click(document.querySelector('[data-slot="worktree-toggle"]') as HTMLButtonElement)
-    await waitFor(() => expect(sandboxToggle()?.disabled).toBe(true))
-    expect(sandboxToggle()?.title).toMatch(/need a worktree/)
+
+    // Worktree off, then Sandbox on: the sandbox mounts a worktree, so it brings one back.
+    fireEvent.click(worktree())
+    expect(worktree().getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(sandboxToggle() as HTMLButtonElement)
+    await waitFor(() => expect(worktree().getAttribute('aria-checked')).toBe('true'))
+    expect(sandboxToggle()?.getAttribute('aria-checked')).toBe('true')
+
+    // …and turning the worktree off again turns the sandbox off rather than greying it out.
+    fireEvent.click(worktree())
+    await waitFor(() => expect(sandboxToggle()?.getAttribute('aria-checked')).toBe('false'))
+    expect(sandboxToggle()?.disabled).toBe(false)
+  })
+
+  it('follows the workspace default when the user has not chosen', async () => {
+    serve({
+      health: HEALTH_SBX,
+      createRun: { id: 'run-3' },
+      workspaceConfig: {
+        ...WORKSPACE_CONFIG,
+        composerDefaults: { ...WORKSPACE_CONFIG.composerDefaults, sandbox: true },
+      },
+    })
+    renderNewTask()
+    await pillReady()
+    await waitFor(() => expect(sandboxToggle()?.getAttribute('aria-checked')).toBe('true'))
+    fireEvent.change(textarea(), { target: { value: 'default sandboxed' } })
+    await startTask()
+    expect(postedBody()).toMatchObject({ sandbox: true })
   })
 })

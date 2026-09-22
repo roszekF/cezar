@@ -337,6 +337,13 @@ runs with the git directories pinned and repo hooks off, so nothing the agent wr
 can make it run code on the host. `npm run test:real-sbx -w @open-mercato/cezar` checks all of
 this against a real sandbox.
 
+Turning **Sandbox** on turns **Worktree** on, and turning Worktree off turns Sandbox off: a
+sandbox mounts the task's worktree, so the two move together rather than one greying the other
+out. **Settings → Resources → Sandbox by default** starts every new task sandboxed where `sbx`
+is installed; a per-task choice still wins, and **Plan first** works too — the planning call
+itself runs on the host (it has no worktree, no shell and no write tools), and the planned run
+it produces is the part that goes into the VM.
+
 **One-time setup:**
 
 ```bash
@@ -351,6 +358,26 @@ on the way out. **Don't** `sbx secret set github` for cezar: it would let the ag
 merge) any of your repositories from inside the VM, around cezar's review gate. cezar pushes
 the task branch from the host anyway.
 
+**Editing what a sandbox may reach.** These are `sbx`'s own settings, not cezar's — cezar
+mounts and launches, it does not re-wrap another tool's policy:
+
+```bash
+sbx policy ls                                     # every rule in force
+sbx policy allow network "api.example.com,*.npmjs.org"
+sbx policy deny  network "*.evil.example"         # deny beats allow
+sbx policy allow network "localhost" --sandbox cez-<task id>   # one sandbox only
+sbx policy log                                    # what got blocked, and why
+sbx policy init balanced                          # or allow-all / deny-all, non-interactively
+```
+
+**File access is not a policy** — locally, `sbx`'s filesystem rules are fixed
+(`sbx policy inspect local-policy` shows them as not editable from the CLI). What a sandboxed
+task can reach is exactly the mount list above, which cezar decides: the worktree, the hardened
+`.git`, the task's own directory and its images. There is no per-task way to add another path
+yet; if you need one (a shared cache, a fixture directory), say so and it becomes a setting.
+Per-sandbox network rules are awkward for the same reason — each task gets a new sandbox name —
+so the global policy is the practical knob today.
+
 **Lifecycle.** The VM is stopped when the task settles (its state is kept for **Continue**) and
 removed when the task is deleted, loses a variant pick, or its worktree is removed or reclaimed.
 A Continue after that creates a fresh VM and a fresh agent session told to pick up from the
@@ -358,9 +385,10 @@ handoff journal. At startup cezar stops VMs a crash left running and removes one
 gone — only its own `cez-<task id>` VMs for this repo. **Open in CLI** resumes the session inside
 the VM (`sbx exec -it cez-<id> claude --resume …`).
 
-**Limits (v1):** Claude and Codex only, one agent per task (no mixed-agent workflows); worktree
-required; no agent-account override (a sandbox has its own login); no dispatch, `cez
-automation` or follow-up inbox (the VM can't reach the cockpit); not for plan-first runs yet.
+**Limits (v1):** Claude and Codex only, one agent per task (no mixed-agent workflows, and a
+Continue must stay on the agent the sandbox was created for); a worktree is always used; no
+agent-account override (a sandbox has its own login); no dispatch, `cez automation` or
+follow-up inbox (the VM can't reach the cockpit).
 Check steps see only the task's variables — list anything else they need in
 `CEZ_ENV_PASSTHROUGH=A,B` (visible to the agent too). The memory column measures only the
 local `sbx` client; the VM is capped with your workspace memory limit instead. Dependencies

@@ -539,6 +539,8 @@ export interface WorkspaceConfigResponse {
   composerDefaults: {
     autonomous: boolean | null;
     worktree: boolean | null;
+    /** Sandbox new tasks by default (spec 2026-09-22-docker-sandboxes). */
+    sandbox: boolean | null;
     inheritedAutonomous: boolean | 'source-dependent';
     inheritedWorktree: boolean;
   };
@@ -2926,6 +2928,7 @@ export function createApp(deps: ServerDeps) {
     composerDefaults: {
       autonomous: config.composerDefaults.autonomous ?? null,
       worktree: config.composerDefaults.worktree ?? null,
+      sandbox: config.composerDefaults.sandbox ?? null,
       inheritedAutonomous:
         process.env.CEZ_AUTONOMOUS_DEFAULT === '0'
           ? false
@@ -3004,6 +3007,10 @@ export function createApp(deps: ServerDeps) {
           else if (composerDefaults?.worktree !== undefined) {
             config.composerDefaults.worktree = composerDefaults.worktree;
           }
+          if (composerDefaults?.sandbox === null) delete config.composerDefaults.sandbox;
+          else if (composerDefaults?.sandbox !== undefined) {
+            config.composerDefaults.sandbox = composerDefaults.sandbox;
+          }
           if (resources?.maxParallel !== undefined) config.resources.maxParallel = resources.maxParallel;
           if (resources?.maxMonitoringSessions !== undefined) {
             config.resources.maxMonitoringSessions = resources.maxMonitoringSessions;
@@ -3080,6 +3087,7 @@ export function createApp(deps: ServerDeps) {
     composerDefaults: z
       .object({
         autonomous: z.boolean().nullable().optional(),
+        sandbox: z.boolean().nullable().optional(),
         worktree: z.boolean().nullable().optional(),
       })
       .optional(),

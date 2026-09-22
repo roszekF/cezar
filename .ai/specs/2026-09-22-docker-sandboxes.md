@@ -243,13 +243,24 @@ All seven phases are implemented on branch `feat/docker-sandboxes` (fork `roszek
 - **`CEZ_SANDBOX=0`** makes `capabilities.sandbox` absent. There is no `disabled` state.
 - **Boot reconcile** stops *every* running `cez-*` VM of this repo, because at boot nothing is live yet in this process. It does not take the repo lock, and assumes one cezar process per repo.
 - **Dispatch and `cez automation`** prompts are dropped for sandboxed runs, and dispatch is refused at the route.
-- **Plan-first:** the toggle is disabled for plan-first runs.
+- **Plan-first** is supported: the planned run carries the flag. The planning call itself stays on the host — it has no worktree to mount, and runs with `allowedTools: []` (no shell, no writes, no fetch).
+- **The toggles are paired** rather than mutually exclusive: Sandbox on turns Worktree on, Worktree off turns Sandbox off.
+- **`composerDefaults.sandbox`** (Settings → Resources) starts new tasks sandboxed. On/Off only — there is no environment default to inherit.
+- **The agent kit is recorded** on the run's sandbox, so a Continue on the other backend is refused instead of failing as "command not found" inside the VM.
+
+**Considered and rejected:** *sandboxing an in-place run* (worktree off). It would still protect
+everything outside the repo, but the agent's output would land directly in the checkout the user
+works in, where their own tooling runs it on the host (`package.json` scripts, `.vscode/tasks.json`,
+`.envrc`, a `Makefile`) — the gitlink class of hole with the user as the trigger instead of cezar.
+It would also mean mounting `.ai/cezar` (readable even when held `:ro`, so `runs.json`, the
+`launch-key` and other tasks' worktrees leak) and write-protecting workflow files a later
+non-sandboxed run would execute. Keeping the worktree requirement keeps the mount surface small
+and the agent's output behind review.
 
 **Deferred (not built):**
 
 - **Memory guard.** It is not wired to VM memory. The VM is capped with the workspace memory limit instead, and the table's memory column shows only the `sbx` client.
 - **Global skill directories.** These are not mounted into the VM (the skill body still reaches the agent through the system prompt).
-- **Sandboxed plan-first runs.**
 - **A per-run memory figure** in the tasks table.
 - **Host uid ≠ 1000.** This is still untested (spike check d).
 

@@ -81,6 +81,7 @@ function serve({
     effectiveSkillsAutoUpdate: true,
     composerDefaults: {
       autonomous: null,
+      sandbox: null,
       worktree: null,
       inheritedAutonomous: 'source-dependent',
       inheritedWorktree: true,
@@ -193,6 +194,7 @@ describe('Agent accounts → Defaults for new projects', () => {
             effectiveSkillsAutoUpdate: true,
             composerDefaults: {
               autonomous: null,
+              sandbox: null,
               worktree: null,
               inheritedAutonomous: 'source-dependent',
               inheritedWorktree: true,

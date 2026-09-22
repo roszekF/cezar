@@ -32,6 +32,7 @@ function serve(resources: Partial<WorkspaceConfigResponse['resources']> = {}) {
     effectiveSkillsAutoUpdate: true,
     composerDefaults: {
       autonomous: null,
+      sandbox: null,
       worktree: null,
       inheritedAutonomous: 'source-dependent',
       inheritedWorktree: true,
@@ -229,5 +230,17 @@ describe('Global settings → Resources', () => {
     await waitFor(() => expect(puts().at(-1)?.body).toEqual({
       composerDefaults: { worktree: true },
     }))
+  })
+
+  // spec 2026-09-22-docker-sandboxes: On/Off only — a sandbox has no "inherit" (no env default).
+  it('renders and saves the Sandbox-by-default policy', async () => {
+    serve()
+    renderResources()
+    const sandbox = (await screen.findByLabelText('Sandbox by default')) as HTMLSelectElement
+    expect(sandbox.value).toBe('off')
+    expect([...sandbox.options].map((option) => option.value)).toEqual(['on', 'off'])
+
+    fireEvent.change(sandbox, { target: { value: 'on' } })
+    await waitFor(() => expect(puts().at(-1)?.body).toEqual({ composerDefaults: { sandbox: true } }))
   })
 })

@@ -105,6 +105,7 @@ function serve(answers: Answers = {}) {
     effectiveSkillsAutoUpdate: true,
     composerDefaults: {
       autonomous: null,
+      sandbox: null,
       worktree: null,
       inheritedAutonomous: 'source-dependent',
       inheritedWorktree: false,

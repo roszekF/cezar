@@ -330,16 +330,19 @@ export function NewTaskRoute() {
   const sandboxToggle = resolveSandboxToggle({
     capability: health.data?.capabilities.sandbox,
     hasGit,
-    worktreeOn,
     runner: displayRunner,
     agentProfile,
     dispatchOn,
   })
-  const sandboxDisabledReason = draft.planFirst
-    ? 'Plan-first runs are not sandboxed yet — use Start'
-    : sandboxToggle.disabledReason
+  const sandboxDisabledReason = sandboxToggle.disabledReason
+  // A sandbox mounts the worktree, so the two toggles move together: `setSandbox(true)` turns
+  // Worktree on, and turning Worktree off turns Sandbox off. `worktreeOn` therefore has the last
+  // word here — a draft that remembers Sandbox on cannot outlive the worktree it needs.
   const sandboxOn =
-    sandboxToggle.shown && sandboxDisabledReason === undefined && (draft.sandbox ?? uiState.data?.lastSandbox ?? false)
+    sandboxToggle.shown
+    && sandboxDisabledReason === undefined
+    && worktreeOn
+    && (draft.sandbox ?? uiState.data?.lastSandbox ?? workspaceConfig.data?.composerDefaults?.sandbox ?? false)
 
   // Follow-up generation (#444) is offered only while the server has the global inbox on
   // (#471, `CEZ_FOLLOWUPS=1`) — there is no inbox for the follow-ups to land in otherwise, and
@@ -550,6 +553,7 @@ export function NewTaskRoute() {
           defaultRunner,
           variants,
           images: plan.images,
+          sandbox: sandboxOn,
           generateFollowups: generateFollowupsOn,
           todoId: deepLink.todo, // #374: planning first must not lose the inbox entry
           dispatch,
@@ -730,7 +734,7 @@ export function NewTaskRoute() {
                       ? "Dispatch forks this task's commits — subtasks need a worktree"
                       : 'Parallel variants always use isolated worktrees'
                   }
-                  onChange={(on) => update({ worktree: on })}
+                  onChange={(on) => update({ worktree: on, ...(on ? {} : { sandbox: false }) })}
                 />
               ) : null}
               <AutonomousToggle
@@ -742,7 +746,7 @@ export function NewTaskRoute() {
                 <SandboxToggle
                   on={sandboxOn}
                   disabledReason={sandboxDisabledReason}
-                  onChange={(on) => update({ sandbox: on })}
+                  onChange={(on) => update({ sandbox: on, ...(on ? { worktree: true } : {}) })}
                 />
               ) : null}
               {followupsToggleShown ? (
@@ -953,7 +957,7 @@ function SandboxToggle({
           ? disabledReason
           : on
             ? 'Sandboxed — the agent and checks run in a Docker Sandbox that sees only this task’s worktree'
-            : 'Runs on this machine — check to run the agent and checks in a Docker Sandbox'
+            : 'Runs on this machine — check to run the agent and checks in a Docker Sandbox (turns Worktree on)'
       }
       className={cn(chipClass, on && !disabled && 'border-primary/60 text-foreground')}
     >

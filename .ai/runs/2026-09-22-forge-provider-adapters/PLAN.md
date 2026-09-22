@@ -46,6 +46,7 @@
 | 3 | 3.2-review-fix | Freeze the clock in the GitLab dry-run list test | inline | done | 927f232b |
 | 3 | 3.8-review-fix | Finish forge-aware copy across the forge tab | dispatch | done | b195fece |
 | 3 | 3.1-review-fix | Name GitLab in the merge-state fallback | inline | done | b9f7d22b |
+| 4 | 4.2-review-fix | Persist the glab credential helper after a GitLab clone | dispatch | todo | — |
 
 ## Goal
 
@@ -231,6 +232,9 @@ All GitLab calls run `glab` with `cwd = repoRoot` through `forge/cli.ts`; `glab 
 - `server/checkout.ts`: `parseRepoRef()` accepts `owner/repo` (GitHub, unchanged) and full URLs on any discovered forge host (GitLab subgroups allowed in the source path); the single-path-segment **target** rule and `cleanupCheckout`'s ownership proof unchanged (security invariants). Per-kind runner: `gh repo clone` (unchanged, incl. its credential helper) or `glab repo clone <url>`; unknown host → 400. Server validator message and `POST /projects/checkout` shape unchanged except the 400 text naming "a git forge repository".
 - Copy: clone dialog title "Clone from a git forge", placeholder accepts a full URL; `app-shell.tsx` menu item and `settings/projects-section.tsx` hint neutral.
 - Tests: `checkout.test.ts` GitLab spellings (https, ssh, subgroup), unknown host 400, `glab` missing → 503 hint, cleanup guard refusing everything it refuses today; `clone-project-dialog.test.tsx` copy.
+
+#### 4.2-review-fix Persist the glab credential helper after a GitLab clone
+- Raised by the 4.2 executor: the GitHub clone path writes `credential.https://github.com.helper = !gh auth git-credential` into the clone so later task-worktree pushes authenticate through `gh`; the GitLab path wrote nothing, so an HTTPS GitLab clone could fail its first `git push`. Mirror it with `credential.<origin>.helper = !glab auth git-credential` (glab 1.118 provides `glab auth git-credential`).
 
 #### 4.3 Host tooling, agent env and redaction for glab
 - `core/backend-detect.ts`: `probeGlab()` (`glab auth status`, hint "install the GitLab CLI and run `glab auth login` (only needed for GitLab projects)"), added to `detectEnvironment` checks as `'glab'` (optional, never an error).

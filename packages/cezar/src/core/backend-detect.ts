@@ -144,17 +144,43 @@ async function probeGh(): Promise<BackendCheck> {
   }
 }
 
+/** How long the `glab` probe may take. `detectEnvironment` feeds `healthSnapshot`, and a snapshot
+ *  older than `HEALTH_MAX_STALE_MS` makes `GET /api/v1/health` WAIT for this — the bookmarklet's
+ *  latency budget (CODE_REVIEW.md priority 2). Local reads answer in milliseconds; this is only the
+ *  ceiling for a pathological host. */
+const GLAB_PROBE_TIMEOUT_MS = 2_500;
+
+/** `glab`'s own version notifier is its one network touch on an otherwise local command; off, so
+ *  an offline host cannot spend the probe's budget on it. */
+const GLAB_PROBE_ENV = { ...process.env, GLAB_CHECK_UPDATE: 'false' };
+
 /**
- * `glab auth status` is the GitLab equivalent of `probeGh`'s `gh auth token`:
- * it exits 0 when logged in to at least one host, and non-zero — printing to
- * stderr — when logged out (spec 2026-08-10-forge-provider-adapters, D6).
- * ENOENT (glab not installed) lands in the same `catch`, exactly like every
- * other optional CLI here: no distinction is drawn between "not installed"
- * and "not authenticated", matching `probeGh`.
+ * The GitLab equivalent of `probeGh`'s `gh auth token`, and deliberately the same SHAPE: a LOCAL
+ * config read, never `glab auth status`. `auth status` validates the token against every
+ * configured host over the NETWORK, and this probe runs on the health request path — offline, it
+ * would hold `/api/v1/health` open until its timeout, which reads as "cez is down" (AGENTS.md: a
+ * missing dependency degrades, never blocks). Live GitLab authentication is the off-path discovery
+ * warm-up's job (`server/forge/discovery.ts` rung 3), which does run `glab auth status`.
+ *
+ * Two local reads, because `glab config get token` without `--host` only sees the environment:
+ * the default host (which also proves `glab` is installed and runnable), then that host's token.
+ * `glab`'s lookup order is environment → local → global, so a `GITLAB_TOKEN` in the environment
+ * counts as authenticated exactly as `glab` itself would count it.
+ *
+ * What this can and cannot see: it answers "is a credential configured for the host `glab` would
+ * use by default", not "is that credential still valid" — a revoked or expired token still reads
+ * as authenticated, and a user logged in ONLY to a self-managed host that is not their default
+ * reads as not authenticated. Both are the right trade for a check whose answer is a hint.
+ * ENOENT (glab not installed) lands in the same `catch` as a config read that fails, exactly like
+ * every other optional CLI here and exactly as before: no distinction is drawn between "not
+ * installed" and "not authenticated" (spec 2026-08-10-forge-provider-adapters, D6).
  */
 async function probeGlab(): Promise<BackendCheck> {
   try {
-    await exec('glab', ['auth', 'status'], { timeout: 10_000 });
+    const opts = { timeout: GLAB_PROBE_TIMEOUT_MS, env: GLAB_PROBE_ENV };
+    const { stdout: host } = await exec('glab', ['config', 'get', 'host'], opts);
+    const { stdout: token } = await exec('glab', ['config', 'get', 'token', '--host', host.trim() || 'gitlab.com'], opts);
+    if (!token.trim()) throw new Error('no token configured');
     return { name: 'glab', available: true, version: 'authenticated' };
   } catch {
     return {

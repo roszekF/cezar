@@ -6,7 +6,10 @@ const getRepoInfoMock = vi.hoisted(() => vi.fn());
 // The forge module shells out to `gh`. Mocking it is the whole point of this file: what is under
 // test is the WRAPPER's contract — background, never throwing — not the lookup itself, which has
 // its own coverage in `server/forge/github.test.ts`.
-vi.mock('../server/forge/github.ts', () => ({
+// Partial: `forge/gitlab.ts` imports real constants from this module (its checks budget), and a
+// bare factory would make those `undefined` for every importer in the same graph.
+vi.mock('../server/forge/github.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../server/forge/github.ts')>()),
   resolveRepoHandle: (...args: unknown[]) => resolveRepoHandleMock(...args),
 }));
 // The remote read is a `git` spawn for the same reason — the classification it feeds

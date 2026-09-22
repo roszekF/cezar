@@ -56,6 +56,7 @@
 | 4 | 4.3-review-fix | Keep the glab probe off the health request path | dispatch | done | pending |
 | 3 | 3.4-review-fix | Bound the GitLab checks fan-out with one deadline | dispatch | done | pending |
 | 2 | 2.2-review-fix | Load the discovery cache before the first request | dispatch | done | pending |
+| 4 | 4.4-review-fix-3 | Restore the partial forge mock in the repo-handle test | inline | done | pending |
 
 ## Goal
 
@@ -296,6 +297,9 @@ All GitLab calls run `glab` with `cwd = repoRoot` through `forge/cli.ts`; `glab 
 
 #### 2.2-review-fix Load the discovery cache before the first request
 - **minor→major for GitHub Enterprise**, found by the end-of-run review. The discovery map is read lazily on first use, which in practice happens inside a request (`/api/v1/projects` → per-project probe), and the boot warm-up is fire-and-forget. Before this branch the `/github*` routes shelled `gh` directly, so a GHE project worked immediately; now, until discovery answers, its host is unclassified and those routes degrade to "No supported forge remote detected". Load the cache eagerly in `createApp` beside the warm-up, and state the remaining first-probe window in the docs.
+
+#### 4.4-review-fix-3 Restore the partial forge mock in the repo-handle test
+- Collision between two review fixes made in parallel: 3.4-review-fix made `forge/gitlab.ts` import `TIMELINE_BUDGET_MS` from `forge/github.ts`, while 4.4-review-fix-2's new `arm-repo-handle.test.ts` mocks that module with a bare factory — so the whole file failed to collect (`No "TIMELINE_BUDGET_MS" export is defined on the mock`). The mock now spreads `importOriginal()`.
 
 ## Risks
 

@@ -1,6 +1,15 @@
 import type { RepoInfo } from '../git.ts';
 import { createGithubDriver } from './github.ts';
-import type { ForgeChecksData, ForgeCommentsData, ForgeDriver, ForgeKind, ForgeListData, ForgeListOptions, ForgeSearchData } from './types.ts';
+import type {
+  ForgeChecksData,
+  ForgeCommentsData,
+  ForgeDriver,
+  ForgeKind,
+  ForgeListData,
+  ForgeListOptions,
+  ForgeRefStatusData,
+  ForgeSearchData,
+} from './types.ts';
 
 /**
  * Forge resolution (cockpit-ui redesign spec §"Forge-driver seam"): map the
@@ -149,6 +158,21 @@ export async function listForgeChecks(forge: ForgeDriver | null, numbers: number
   if (!forge) return { available: false, reason: NO_FORGE_REASON };
   if (!forge.listChecks) return { available: false, reason: `CI checks are not supported for this ${forge.kind} remote` };
   return forge.listChecks(numbers);
+}
+
+/**
+ * The `GET /api/github/ref-status` batched chip status through the driver seam (spec
+ * 2026-08-10-forge-provider-adapters, Step 1.7). A null forge, or one without `refStatus`,
+ * degrades in the payload — the route never 5xxs over a missing capability. `recheckAfterMs: null`
+ * here means exactly what it means everywhere else in `ForgeRefStatusData`: nothing in this
+ * answer can change, so a forge that cannot answer at all has nothing worth asking again for.
+ */
+export async function forgeRefStatus(forge: ForgeDriver | null, prs: number[], issues: number[]): Promise<ForgeRefStatusData> {
+  if (!forge) return { available: false, reason: NO_FORGE_REASON, recheckAfterMs: null };
+  if (!forge.refStatus) {
+    return { available: false, reason: `Reference status is not supported for this ${forge.kind} remote`, recheckAfterMs: null };
+  }
+  return forge.refStatus(prs, issues);
 }
 
 export type { ForgeDriver, ForgeAvailability, ForgeItem, ForgeKind, ForgePrStatus, ForgeRefKind } from './types.ts';

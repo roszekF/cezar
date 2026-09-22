@@ -186,6 +186,7 @@ import { isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
 import { browseDirectory, isInsideBrowseRoot, isLexicallyInsideBrowseRoot, resolveBrowseRoot } from './fs-browse.ts';
 import {
+  forgeRefStatus,
   listForgeChecks,
   listForgeComments,
   listForgeItems,
@@ -194,7 +195,7 @@ import {
   searchForgeItems,
   type ForgeAvailability,
 } from './forge/index.ts';
-import { fetchGithubPrDiff, fetchGithubRefStatus, forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, GithubPrNotFoundError, GH_CHECKS_MAX, GH_SEARCH_MAX, GH_REF_STATUS_MAX } from './github.ts';
+import { fetchGithubPrDiff, forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, GithubPrNotFoundError, GH_CHECKS_MAX, GH_SEARCH_MAX, GH_REF_STATUS_MAX } from './github.ts';
 import { ensureLaunchKey } from './launch-key.ts';
 import { openInTerminal } from './open-in-terminal.ts';
 import { agentCliRunner, detectOpenTargets, openFileInDefaultApp, openInApp } from './open-in-app.ts';
@@ -5357,7 +5358,8 @@ export function createApp(deps: ServerDeps) {
         if (parsedPrs.length === 0 && parsedIssues.length === 0) {
           return c.json({ error: 'missing prs or issues query' }, 400);
         }
-        return c.json(await fetchGithubRefStatus(repoRoot, { prs: parsedPrs, issues: parsedIssues }));
+        const forge = resolveForge(await getRepoInfo(repoRoot));
+        return c.json(await forgeRefStatus(forge, parsedPrs, parsedIssues));
       },
     )
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RepoInfo } from '../git.ts';
 import {
   forgeKindOfRemote,
+  forgeRefStatus,
   listForgeChecks,
   listForgeComments,
   listForgeItems,
@@ -291,5 +292,48 @@ describe('listForgeChecks (the /github/checks route)', () => {
     };
     expect(await listForgeChecks(driver, [1, 2])).toBe(payload);
     expect(calls).toEqual([[1, 2]]);
+  });
+});
+
+describe('forgeRefStatus (the /github/ref-status route)', () => {
+  // Spec 2026-08-10-forge-provider-adapters, Step 1.7: the route goes through the driver, and a
+  // missing forge or capability degrades in the payload instead of throwing.
+  const base: ForgeDriver = {
+    kind: 'gitlab',
+    detect: async () => ({ available: true }),
+    detectCached: () => null,
+    listIssues: async () => [],
+    listPRs: async () => [],
+    createPR: async () => ({ ok: false, error: 'test' }),
+    prStatus: async () => null,
+    viewUrl: () => null,
+  };
+
+  it('answers the unavailable payload for a null forge', async () => {
+    // A forge that cannot answer at all has nothing to recheck.
+    expect(await forgeRefStatus(null, [1], [2])).toEqual({
+      available: false,
+      reason: NO_FORGE_REASON,
+      recheckAfterMs: null,
+    });
+  });
+
+  it('degrades for a driver without refStatus', async () => {
+    expect(await forgeRefStatus(base, [1], [])).toEqual({
+      available: false,
+      reason: 'Reference status is not supported for this gitlab remote',
+      recheckAfterMs: null,
+    });
+  });
+
+  it('delegates to refStatus with the prs and issues lists', async () => {
+    const calls: unknown[] = [];
+    const payload = { available: true, prs: {}, issues: {}, recheckAfterMs: null };
+    const driver: ForgeDriver = {
+      ...base,
+      refStatus: async (prs, issues) => (calls.push([prs, issues]), payload),
+    };
+    expect(await forgeRefStatus(driver, [1, 2], [3])).toBe(payload);
+    expect(calls).toEqual([[[1, 2], [3]]]);
   });
 });

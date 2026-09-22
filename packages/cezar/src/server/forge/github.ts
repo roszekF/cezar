@@ -2825,6 +2825,9 @@ export function createGithubDriver(repoRoot: string, repoRef: GithubRepoRef | nu
     // Lazy CI glyphs for on-screen PR rows (#664) — byte-identical payload.
     listChecks: (numbers) => fetchGithubChecks(repoRoot, numbers),
 
+    // Batched status for a task table's PR/issue chips — byte-identical payload.
+    refStatus: (prs, issues) => fetchGithubRefStatus(repoRoot, { prs, issues }),
+
     prDiff: (number, opts) => fetchGithubPrDiff(repoRoot, number, opts?.refresh),
 
     createPR: (input) => createDraftPr(input),

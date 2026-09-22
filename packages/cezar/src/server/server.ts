@@ -1570,10 +1570,7 @@ export function createApp(deps: ServerDeps) {
       defaultRunner: config.defaultRunner,
       // Non-blocking: cached availability or null-until-warm — health must never pay a `gh`
       // shell-out (the bookmarklet aborts its port probe at 800 ms). See detectGithubCached.
-      // `ForgeKind` widened to include `gitlab` (spec 2026-08-10-forge-provider-adapters) ahead of
-      // the contract; until `forgeInfoSchema.kind` widens too, only a GitHub driver is reported —
-      // and `resolveForge` builds no other, so the payload is unchanged.
-      forge: forge?.kind === 'github' ? { kind: forge.kind, ...(forge.detectCached() ?? {}) } : null,
+      forge: forge ? { kind: forge.kind, ...(forge.detectCached() ?? {}) } : null,
       capabilities: caps,
       // Workspace enumeration (multi-project spec) — additive, id+name ONLY.
       // NEVER `projects[].root` here: health is the one CORS-open route, and

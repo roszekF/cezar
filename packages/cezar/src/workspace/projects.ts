@@ -235,9 +235,8 @@ export interface ProjectListEntry extends WorkspaceProject {
   /** Which forge the root's remote belongs to (#698) — classified from the
    *  remote URL alone, no `gh` probe. Omitted when there is no forge remote.
    *  The sidebar gates each project group's GitHub tab on this, instead of on
-   *  the boot folder's health-level forge answer. Narrowed to `github` until the
-   *  contract's per-project `forge` enum widens (spec 2026-08-10-forge-provider-adapters). */
-  forge?: ContractForgeKind;
+   *  the boot folder's health-level forge answer. */
+  forge?: ForgeKind;
   /** Only ever set by `GET /api/v1/projects` on the synthetic entry for an
    *  unregistered boot folder (see the route). Nothing in this module writes
    *  it: a row that came out of the registry is registered by definition. */
@@ -252,16 +251,12 @@ export interface ProjectListEntry extends WorkspaceProject {
 interface RootProbe {
   status: ProjectStatus;
   branch?: string;
-  forge?: ContractForgeKind;
+  forge?: ForgeKind;
   repoUrl?: string;
 }
 
 /** Probe TTL — long enough to coalesce a burst of sidebar renders, short
  *  enough that a deleted repo shows as `missing` on the next real look. */
-/** The forge kinds the projects contract can carry today. `ForgeKind` already admits
- *  `gitlab`, but no remote classifies as it yet, so this narrowing drops nothing. */
-type ContractForgeKind = Extract<ForgeKind, 'github'>;
-
 const PROBE_TTL_MS = 5_000;
 const probeCache = new Map<string, { at: number; probe: RootProbe }>();
 
@@ -286,8 +281,7 @@ async function computeProbe(root: string): Promise<RootProbe> {
   // Branch and forge are best-effort garnish: getRepoInfo never throws (null
   // on e.g. an unborn HEAD), and a repo without either is still status ok.
   const info = await getRepoInfo(root);
-  const kind = forgeKindOfRemote(info?.remote);
-  const forge: ContractForgeKind | null = kind === 'github' ? kind : null;
+  const forge = forgeKindOfRemote(info?.remote);
   // Free: `getRepoInfo` already ran for the branch, and the remote is already parsed for `forge`.
   const repoUrl = forgeWebRoot(info?.remote);
   return {

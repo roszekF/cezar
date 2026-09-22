@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 
 export interface BackendCheck {
-  name: 'claude' | 'codex' | 'opencode' | 'pi' | 'gh' | 'git';
+  name: 'claude' | 'codex' | 'opencode' | 'pi' | 'gh' | 'glab' | 'git';
   available: boolean;
   version?: string;
   hint?: string;

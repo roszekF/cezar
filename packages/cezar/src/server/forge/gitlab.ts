@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { createSwrCache, deleteKeysWithPrefix, fetchBoundedPages, isNotFound, registerProjectCacheEvictor, runCli } from './cli.ts';
 import {
   GH_CHECKS_MAX,
+  GH_SEARCH_MAX,
   GithubPrNotFoundError,
   TIMELINE_BUDGET_MS,
   TIMELINE_EVENT_CAP,
@@ -24,6 +25,7 @@ import type {
   ForgePrChange,
   ForgePrDiffResult,
   ForgePrStatus,
+  ForgeSearchData,
   ForgeTimelineEvent,
   ForgeTimelineEventKind,
 } from './types.ts';
@@ -38,9 +40,10 @@ import type {
  * `GET /github` tier. Step 3.3 adds `listComments` — the conversation thread, assembled from the
  * notes + resource-event endpoints since GitLab has no single timeline call like GitHub's. Step 3.4
  * adds `listChecks` (per-MR pipeline glyphs) and `prStatus` (the branch's newest merge request).
- * Step 3.5 adds `prDiff` — bounded file changes, forge-neutral caps (`forge/limits.ts`). The
- * remaining optional capabilities (`searchItems`, …) stay absent until their own Steps, which the
- * routes already degrade in the payload (`… is not supported for this gitlab remote`).
+ * Step 3.5 adds `prDiff` — bounded file changes, forge-neutral caps (`forge/limits.ts`). Step 3.6
+ * adds `searchItems` — the open-only list tier's escape hatch into every state, mirroring GitHub's
+ * `searchGithubItems` (#730). `refStatus` and the merge-panel capabilities (`prMergeState`,
+ * `mergePR`) stay absent for good (spec Non-goals) — the routes already degrade in the payload.
  */
 
 /** The ENOENT hint (spec § Edge Cases — glab not installed). A literal rather than
@@ -971,6 +974,69 @@ async function fetchGitlabPrDiff(repoRoot: string, number: number, refresh = fal
   return data;
 }
 
+// ---- searchItems (Step 3.6) --------------------------------------------------------------------
+// The open-only list tier's escape hatch into every state (mirrors GitHub's `searchGithubItems`,
+// #730): `glab issue/mr list --search <q> --all --output json --per-page N`. The query is passed
+// as its OWN argv element — never interpolated into a shell string. No cache: GitHub's own search
+// isn't cached either (a search is inherently a one-off, unlike the tab's steady list view).
+
+/** CEZ_DRY_RUN=1 — filters the demo catalog by the query, mirroring `searchGithubItems`'s own
+ *  dry-run rule (#838): `truncated` follows the live path's own cap rule so the offline demo still
+ *  exercises it. */
+function mockGitlabSearch(kind: 'issue' | 'pr', query: string, limit: number): ForgeSearchData {
+  const mock = mockGitlabList();
+  const pool = kind === 'issue' ? mock.issues : mock.prs;
+  const needle = query.replace(/^#/, '').toLowerCase();
+  const items = pool.filter((i) => String(i.number).includes(needle) || i.title.toLowerCase().includes(needle)).slice(0, limit);
+  return { available: true, items, truncated: items.length >= limit };
+}
+
+/**
+ * Search issues/MRs in ANY state (Step 3.6, mirrors `searchGithubItems`). Unlike GitHub's driver,
+ * `glab issue/mr list --search` already covers every state with one call and no separate
+ * exact-number lookup is needed — `--search` matches a bare number against the title/description
+ * too. `checks: null` on every hit (`toForgeItem`'s `pr` branch, D5) — the search tier does not pay
+ * for CI rollups, same rationale as the list tier since #664. Never throws.
+ */
+async function searchGitlabItems(
+  repoRoot: string,
+  kind: 'issue' | 'pr',
+  query: string,
+  limit = GH_SEARCH_MAX,
+): Promise<ForgeSearchData> {
+  const trimmed = query.trim();
+  if (trimmed === '') return { available: true, items: [] };
+  const capped = Math.min(Math.max(limit, 1), GH_SEARCH_MAX);
+  if (process.env.CEZ_DRY_RUN === '1') return mockGitlabSearch(kind, trimmed, capped);
+  const command = kind === 'pr' ? 'mr' : 'issue';
+  try {
+    const out = await glab(
+      repoRoot,
+      [command, 'list', '--search', trimmed, '--all', '--output', 'json', '--per-page', String(capped)],
+      15_000,
+    );
+    let items: ForgeItem[];
+    try {
+      items =
+        kind === 'pr'
+          ? z.array(glMrRowSchema).parse(JSON.parse(out)).map((row) => toForgeItem('pr', row))
+          : z.array(glIssueRowSchema).parse(JSON.parse(out)).map((row) => toForgeItem('issue', row));
+    } catch {
+      return { available: false, reason: `glab ${command} list returned an unexpected response`, items: [] };
+    }
+    const labelColors = await fetchGitlabLabelColors(repoRoot);
+    return {
+      available: true,
+      items,
+      truncated: items.length >= capped,
+      ...(labelColors ? { labelColors } : {}),
+    };
+  } catch (err) {
+    const reason = isNotFound(err) ? GLAB_NOT_FOUND_REASON : glabFailureReason(err);
+    return { available: false, reason, items: [] };
+  }
+}
+
 /** `parsed` feeds `listAll`'s `repo` field and `viewUrl`'s origin + path fallback (Step 3.7). */
 export function createGitlabDriver(repoRoot: string, parsed: ParsedRemote): ForgeDriver {
   return {
@@ -992,6 +1058,9 @@ export function createGitlabDriver(repoRoot: string, parsed: ParsedRemote): Forg
 
     // Bounded, read-only file changes for a merge request — forge-neutral caps (Step 3.5).
     prDiff: (number, opts) => fetchGitlabPrDiff(repoRoot, number, opts?.refresh),
+
+    // The open-only list tier's escape hatch into every state (Step 3.6).
+    searchItems: (kind, query, opts) => searchGitlabItems(repoRoot, kind, query, opts?.limit),
 
     // Step 4.1 implements draft merge requests.
     createPR: async () => ({ ok: false, error: 'Merge request creation is not implemented yet for GitLab' }),

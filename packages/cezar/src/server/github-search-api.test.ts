@@ -132,4 +132,14 @@ describe('the github search API', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: 'invalid search query' });
   });
+
+  it('a GitLab remote answers available too (Step 3.6, spec 2026-08-10-forge-provider-adapters)', async () => {
+    execFileSync('git', ['remote', 'remove', 'origin'], { cwd: repoRoot });
+    execFileSync('git', ['remote', 'add', 'origin', 'https://gitlab.com/acme/demo.git'], { cwd: repoRoot });
+    const res = await apiRequest(app, '/api/v1/github/search?kind=pr&q=1');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ForgeSearchData;
+    expect(body.available).toBe(true);
+    expect(body.items.map((i) => i.number)).toEqual([1]);
+  });
 });

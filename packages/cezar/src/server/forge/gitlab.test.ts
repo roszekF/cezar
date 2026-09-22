@@ -11,7 +11,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import type { RunRecord } from '../../runs/store.ts';
 import { evictForgeProjectCaches } from './cli.ts';
-import { GH_CHECKS_MAX, GithubPrNotFoundError } from './github.ts';
+import { GH_CHECKS_MAX, GH_SEARCH_MAX, GithubPrNotFoundError } from './github.ts';
 import { parseRemote, type ParsedRemote } from './index.ts';
 import { FORGE_PR_DIFF_FILE_CAP, FORGE_PR_PATCH_CAP } from './limits.ts';
 import {
@@ -215,11 +215,10 @@ describe('GitLab driver — skeleton members (later steps implement them)', () =
 
   it('leaves the optional capabilities absent, so the routes degrade in the payload', () => {
     const driver = createGitlabDriver(freshRoot(), parsed());
-    // listAll (3.2), listComments (3.3), listChecks (3.4) and prDiff (3.5) are now implemented —
-    // everything else still lands on later Steps (refStatus stays absent for good — spec
-    // Non-goals; prMergeState/mergePR are out of scope for this run entirely).
+    // listAll (3.2), listComments (3.3), listChecks (3.4), prDiff (3.5) and searchItems (3.6) are
+    // now implemented — refStatus stays absent for good (spec Non-goals); prMergeState/mergePR are
+    // out of scope for this run entirely.
     expect(driver.refStatus).toBeUndefined();
-    expect(driver.searchItems).toBeUndefined();
     expect(driver.prMergeState).toBeUndefined();
     expect(driver.mergePR).toBeUndefined();
   });
@@ -1314,5 +1313,126 @@ describe('GitLab driver — prDiff', () => {
     routeGlabPrDiff({ detail: mrDetailSha(HEAD_SHA), diffs: (page) => (page === 1 ? [diffRemoved] : []) });
     const data = await driver.prDiff!(3950);
     if (data.available) expect(data.files[0]?.path).toBe('src/gone.ts');
+  });
+});
+
+// ---- searchItems (Step 3.6) --------------------------------------------------------------------
+// `glab issue/mr list --search <q> --all --output json --per-page N` — the query is its OWN argv
+// element, never interpolated into a shell string. Reuses the same fixtures/row schemas as the
+// list tier (Step 3.2).
+
+describe('GitLab driver — searchItems', () => {
+  beforeEach(() => {
+    vi.stubEnv('CEZ_DRY_RUN', '');
+    execFileMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('maps fixture issue hits to the exact ForgeItem[], passing the query as its own argv element', async () => {
+    routeGlab({ issue: ISSUES_JSON, api: LABELS_JSON });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.searchItems!('issue', 'publish', {});
+    expect(data).toEqual({ available: true, items: ISSUES_ITEMS, truncated: false, labelColors: { 'type::bug': 'd73a4a', 'type::maintenance': '6699cc' } });
+    const call = execFileMock.mock.calls.find((c) => (c[1] as string[])[0] === 'issue');
+    expect(call?.[1]).toEqual(['issue', 'list', '--search', 'publish', '--all', '--output', 'json', '--per-page', String(GH_SEARCH_MAX)]);
+  });
+
+  it('maps fixture MR hits to the exact ForgeItem[]', async () => {
+    routeGlab({ mr: MRS_JSON, api: LABELS_JSON });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.searchItems!('pr', 'delegate', {});
+    expect(data.available).toBe(true);
+    expect(data.items).toEqual(MRS_ITEMS);
+    const call = execFileMock.mock.calls.find((c) => (c[1] as string[])[0] === 'mr');
+    expect(call?.[1]).toEqual(['mr', 'list', '--search', 'delegate', '--all', '--output', 'json', '--per-page', String(GH_SEARCH_MAX)]);
+  });
+
+  it('an empty hit list answers available with no items', async () => {
+    routeGlab({ issue: '[]', api: '[]' });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.searchItems!('issue', 'nothing-matches-this', {})).toEqual({
+      available: true,
+      items: [],
+      truncated: false,
+      labelColors: {},
+    });
+  });
+
+  it('a blank query answers available with no items, without shelling out', async () => {
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.searchItems!('issue', '   ', {})).toEqual({ available: true, items: [] });
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('flags truncated when the hit count reaches the requested limit', async () => {
+    // The fixture answers the same 3-row MRS_JSON regardless of `--per-page`, so a `limit` at or
+    // below the hit count exercises the cap-reached branch and a higher one does not.
+    routeGlab({ mr: MRS_JSON, api: '[]' });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+
+    const capped = await driver.searchItems!('pr', 'x', { limit: 2 });
+    expect(capped.truncated).toBe(true);
+    const call = execFileMock.mock.calls.find((c) => (c[1] as string[])[0] === 'mr');
+    expect(call?.[1]).toEqual(['mr', 'list', '--search', 'x', '--all', '--output', 'json', '--per-page', '2']);
+
+    execFileMock.mockReset();
+    routeGlab({ mr: MRS_JSON, api: '[]' });
+    const uncapped = await driver.searchItems!('pr', 'x', { limit: 10 });
+    expect(uncapped.truncated).toBe(false);
+  });
+
+  it('a limit above GH_SEARCH_MAX is clamped to it', async () => {
+    routeGlab({ issue: '[]', api: '[]' });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    await driver.searchItems!('issue', 'x', { limit: 5_000 });
+    const call = execFileMock.mock.calls.find((c) => (c[1] as string[])[0] === 'issue');
+    expect(call?.[1]).toEqual(['issue', 'list', '--search', 'x', '--all', '--output', 'json', '--per-page', String(GH_SEARCH_MAX)]);
+  });
+
+  it('a malformed hit list answers unavailable with a clear reason', async () => {
+    routeGlab({ issue: 'not json' });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.searchItems!('issue', 'x', {})).toEqual({
+      available: false,
+      reason: 'glab issue list returned an unexpected response',
+      items: [],
+    });
+  });
+
+  it('a glab CLI failure answers unavailable with its own first stderr line', async () => {
+    routeGlab({ mr: { fail: GLAB_401 } });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.searchItems!('pr', 'x', {})).toEqual({ available: false, reason: GLAB_401, items: [] });
+  });
+
+  it('glab not installed (ENOENT) answers the install hint', async () => {
+    execFileMock.mockImplementation((...callArgs: unknown[]) => {
+      const cb = callArgs[callArgs.length - 1] as Callback;
+      cb(Object.assign(new Error('spawn glab ENOENT'), { code: 'ENOENT' }));
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.searchItems!('issue', 'x', {})).toEqual({ available: false, reason: GLAB_NOT_FOUND_REASON, items: [] });
+  });
+
+  it('a labels endpoint failure leaves the hits available without labelColors', async () => {
+    routeGlab({ issue: ISSUES_JSON }); // no `api` handler — labels call fails
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.searchItems!('issue', 'x', {});
+    expect(data.available).toBe(true);
+    expect(data.items).toEqual(ISSUES_ITEMS);
+    expect(data.labelColors).toBeUndefined();
+  });
+
+  it('is available under CEZ_DRY_RUN=1 with a filtered demo catalog, without shelling out', async () => {
+    vi.stubEnv('CEZ_DRY_RUN', '1');
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.searchItems!('pr', '1', {});
+    expect(data.available).toBe(true);
+    expect(data.items).toHaveLength(1);
+    expect(data.items[0]?.number).toBe(1);
+    expect(execFileMock).not.toHaveBeenCalled();
   });
 });

@@ -30,7 +30,7 @@
 | 3 | 3.3 | GitLab listComments with timeline events | dispatch | done | bbd3f755 |
 | 3 | 3.4 | GitLab listChecks and prStatus | dispatch | done | c9217a48 |
 | 3 | 3.5 | GitLab prDiff with forge-neutral caps | dispatch | done | c5978f60 |
-| 3 | 3.6 | GitLab searchItems | dispatch:cheap | todo | — |
+| 3 | 3.6 | GitLab searchItems | dispatch:cheap | done | pending |
 | 3 | 3.7 | GitLab viewUrl | dispatch:cheap | todo | — |
 | 3 | 3.8 | Cockpit forge label, icon and copy from health.forge.kind | dispatch | todo | — |
 | 3 | 3.9 | Forge-neutral task reference chips in the cockpit | dispatch | todo | — |

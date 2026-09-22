@@ -24,6 +24,7 @@ import type {
   ForgeTimelineEvent,
   ForgeTimelineEventKind,
 } from './types.ts';
+import { withSandboxGitEnv } from '../../core/sandbox/sandbox-git.ts';
 
 /**
  * The GitHub forge driver — all `gh`-CLI logic in one place, moved here from
@@ -2556,7 +2557,9 @@ function execTool(args: string[], cwd: string, bin: string, timeoutMs = 30_000):
         // piped stdio is not enough to stop it. Without this a `git push` that
         // cannot authenticate hangs for the whole timeout and surfaces as a
         // blank one-minute stall instead of git's own "could not read Username".
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        // A sandboxed run's worktree also pins git's dirs and disables hooks — for
+        // `gh` too, whose internal git calls inherit this env (docker-sandboxes spec).
+        env: withSandboxGitEnv(cwd, { ...process.env, GIT_TERMINAL_PROMPT: '0' }),
       },
       (err, stdout, stderr) =>
         resolve({

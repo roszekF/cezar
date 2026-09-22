@@ -3,6 +3,7 @@ import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { agentHomePaths } from '../paths.ts';
 import { CONFIG_FILES } from './catalog.ts';
+import { withSandboxGitEnv } from '../core/sandbox/sandbox-git.ts';
 
 /**
  * Seed the agents' gitignored personal config layer into a run's worktree
@@ -19,7 +20,7 @@ import { CONFIG_FILES } from './catalog.ts';
 
 function git(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
   return new Promise((resolve) => {
-    execFile('git', args, { cwd, encoding: 'utf8' }, (err, stdout) =>
+    execFile('git', args, { cwd, encoding: 'utf8', env: withSandboxGitEnv(cwd, undefined) }, (err, stdout) =>
       resolve({ ok: !err, stdout: stdout ?? '' }),
     );
   });

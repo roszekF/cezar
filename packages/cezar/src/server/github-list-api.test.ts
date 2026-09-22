@@ -85,11 +85,17 @@ describe('the github list API', () => {
     });
   });
 
-  it('lists through listIssues + listPRs for a GitLab remote (skeleton driver, Step 3.1)', async () => {
-    // The GitLab driver has no `listAll` yet and its list methods answer empty until Step 3.2.
+  it('serves the GitLab driver listAll payload for a GitLab remote (Step 3.2)', async () => {
+    // Dry-run: the GitLab driver's `listAll` now answers its own demo catalog, mirroring
+    // `mockGithub` — no `glab` is touched here either.
     execFileSync('git', ['remote', 'add', 'origin', 'git@gitlab.com:acme/demo.git'], { cwd: repoRoot });
     const res = await apiRequest(app, '/api/v1/github');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ available: true, syncedAt: expect.any(String), issues: [], prs: [] });
+    const body = (await res.json()) as GithubData;
+    expect(body.available).toBe(true);
+    expect(body.repo).toBe('demo/demo');
+    expect(body.issues.length).toBeGreaterThan(0);
+    expect(body.prs.length).toBeGreaterThan(0);
+    expect(body.labelColors).toBeDefined();
   });
 });

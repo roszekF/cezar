@@ -1,7 +1,7 @@
 import { CheckIcon, FolderOpenIcon, LayersIcon, MoonIcon, PlusIcon } from 'lucide-react'
 import * as React from 'react'
 import { useNavigate as useRouterNavigate } from 'react-router'
-import { useHealth, useProjects, useRuns, useRunsIndex, useSkills, useUiState } from '@/api/queries'
+import { useForgeKind, useHealth, useProjects, useRuns, useRunsIndex, useSkills, useUiState } from '@/api/queries'
 import { scopeTo, useActiveProjectId, useNavigate } from '@/lib/project-router'
 import type { ProjectListEntry, RunIndexEntry, RunRecord } from '@open-mercato/cezar-api-client'
 import { resolveForgeNavItems, visibleNavItems } from '@/components/nav-items'
@@ -322,6 +322,9 @@ function PaletteContent({ close }: { close: () => void }) {
   // Health is cached by the shell's chips; here it gates the forge-gated Views row (R6 1.1) —
   // the palette must not offer a GitHub view the sidebar honestly hides.
   const health = useHealth()
+  // Which forge the Views row names — the viewed project's, from the registry (Step
+  // 3.8-review-fix-2), not `/health`'s workspace-level boot answer.
+  const forgeKind = useForgeKind()
   const now = Date.now()
 
   // Same threshold as the sidebar's grouped nav (`app-shell-container.tsx`): with one registered
@@ -458,7 +461,11 @@ function PaletteContent({ close }: { close: () => void }) {
               inbox: health.data?.capabilities.followups === true,
               automations: health.data?.capabilities.automations === true,
             }),
-            health.data?.forge?.kind,
+            // The VIEWED project's forge, not the boot project's (Step 3.8-review-fix-2): the
+            // palette navigates within the active scope, so its nav row must carry that
+            // project's label and icon. Availability above stays health-level, as the shell's
+            // flat nav does.
+            forgeKind,
           ).map((item) => {
             const Icon = item.icon
             return (

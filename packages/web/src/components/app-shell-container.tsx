@@ -1,7 +1,7 @@
 import { memo, useMemo, type ReactNode } from 'react'
 import { useLocation } from 'react-router'
 
-import { useHealth, useProjectRuns, useProjects, useRuns, useSkillsUpdate, useTodos } from '@/api/queries'
+import { useForgeKind, useHealth, useProjectRuns, useProjects, useRuns, useSkillsUpdate, useTodos } from '@/api/queries'
 import type { HealthResponse, SkillsUpdateState } from '@open-mercato/cezar-api-client'
 import { AppShell, type RepoChip } from '@/components/app-shell'
 import { CommandPalette } from '@/components/command-palette'
@@ -103,11 +103,12 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
     ? null
     : (activeProject?.name ??
       (isBootProject ? (repoChipOf(health.data)?.name ?? null) : null))
-  // The boot folder's health-level answer (spec 2026-08-10, Step 3.8) — same source as the flat
-  // nav's `forgeAvailable` below. The multi-project sidebar's per-group nav reads each entry's
-  // OWN `forge` field instead (`ProjectGroups`), which this single title cannot represent when
-  // more than one project is registered; that mismatch already exists for `forgeAvailable`.
-  const forgeKind = health.data?.forge?.kind
+  // The VIEWED project's own forge (spec 2026-08-10, Step 3.8-review-fix-2) — the same registry
+  // field the multi-project sidebar's per-group nav reads (`ProjectGroups`), so the document
+  // title of a GitLab project scoped under a GitHub boot project no longer says "GitHub".
+  // `forgeAvailable` below stays health-level (R6 Step 1.1): that mismatch is older and the
+  // per-group nav already gates on each entry's own `forge`.
+  const forgeKind = useForgeKind()
   const pageLabel = titleLabel ?? (titleContext.pageLabel === 'GitHub' ? forgeLabel(forgeKind) : titleContext.pageLabel)
 
   useDocumentTitle({ projectName, pageLabel })

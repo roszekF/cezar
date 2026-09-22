@@ -38,16 +38,24 @@
 | 4 | 4.2 | Clone from a GitLab remote | dispatch:capable | done | dbca8223 |
 | 4 | 4.3 | Host tooling, agent env and redaction for glab | dispatch | done | de170f1d |
 | 4 | 4.4 | Run bookkeeping learns GitLab URL shapes | dispatch | done | 2a49957a |
-| 4 | 4.5 | Bookmarklet matcher from discovered hosts | dispatch:cheap | done | pending |
-| 4 | 4.6 | GitHub-event automations require a GitHub forge | dispatch | done | pending |
-| 4 | 4.7 | Documentation for the second forge | inline | done | pending |
+| 4 | 4.5 | Bookmarklet matcher from discovered hosts | dispatch:cheap | done | 64d4a00a |
+| 4 | 4.6 | GitHub-event automations require a GitHub forge | dispatch | done | 8d4a2079 |
+| 4 | 4.7 | Documentation for the second forge | inline | done | 7482493a |
 | 1 | 1.7-review-fix | Type the driver-stub test payloads explicitly | inline | done | 5f7bae12 |
 | 1 | 1.8-review-fix | Keep the pre-seam draft-PR path when no forge resolves | inline | done | 7ec3ab5f |
 | 3 | 3.2-review-fix | Freeze the clock in the GitLab dry-run list test | inline | done | 927f232b |
 | 3 | 3.8-review-fix | Finish forge-aware copy across the forge tab | dispatch | done | b195fece |
 | 3 | 3.1-review-fix | Name GitLab in the merge-state fallback | inline | done | b9f7d22b |
 | 4 | 4.2-review-fix | Persist the glab credential helper after a GitLab clone | dispatch | done | b22c4a50 |
-| 4 | 4.5-ds-fix | Keep the design guardian green in the bookmarklet test | inline | done | pending |
+| 4 | 4.5-ds-fix | Keep the design guardian green in the bookmarklet test | inline | done | 1a1260f8 |
+| 3 | 3.8-review-fix-2 | Forge kind per viewed project, not the boot project | dispatch | done | pending |
+| 4 | 4.4-review-fix | Match http and on-prem ports in GitLab run-bookkeeping URLs | dispatch | todo | — |
+| 4 | 4.4-review-fix-2 | Keep the foreign-reference guard working on GitLab | dispatch | todo | — |
+| 4 | 4.5-review-fix | Escape every regex metacharacter in bookmarklet hosts | dispatch | todo | — |
+| 4 | 4.6-review-fix | Keep GitHub-event automations on github.com only | dispatch | todo | — |
+| 4 | 4.3-review-fix | Keep the glab probe off the health request path | dispatch | todo | — |
+| 3 | 3.4-review-fix | Bound the GitLab checks fan-out with one deadline | dispatch | todo | — |
+| 2 | 2.2-review-fix | Load the discovery cache before the first request | dispatch | todo | — |
 
 ## Goal
 
@@ -262,6 +270,32 @@ All GitLab calls run `glab` with `cwd = repoRoot` through `forge/cli.ts`; `glab 
 #### 4.7 Documentation for the second forge
 - `AGENTS.md` (Zero config forge sentence; GitHub-integration routing row names `forge/` and GitLab), `BACKWARD_COMPATIBILITY.md` §2 (health `forge.kind`/`checks[].name` widen, projects `forge?`/`repoUrl?` widen, ref-status/merge degrade for GitLab, automations availability note), README prerequisites (`gh` or `glab`), `docs/reference.md` if it names `gh` as the only forge CLI. No env var added (D2), so `.env.example` is unchanged.
 - Tests: `bc-route-inventory.test.ts` green; docs-only.
+
+### Review fixes (authoritative end-of-run review)
+
+#### 3.8-review-fix-2 Forge kind per viewed project, not the boot project
+- **major**, found by the end-of-run review. The forge tab, app shell title and hand-off body read `useHealth().data?.forge?.kind`, but `/health` is workspace-level and always describes the BOOT project (`useProjectRepoBase` guards for exactly this reason, #526). In a workspace whose boot project is GitHub and whose second project is GitLab, `/p/gl/github` lists real GitLab MRs under a "GitHub"/"Pull requests" label, tells the user to run `gh auth login`, and writes "Address GitHub pull request #12" into a run's prompt for a merge request (and the mirror case). Resolve the kind per scoped project from the registry (`projects.find(...)?.forge`), falling back to health only for the boot project.
+
+#### 4.4-review-fix Match http and on-prem ports in GitLab run-bookkeeping URLs
+- **major**, found by the end-of-run review. `runs/store.ts`'s `GITLAB_PROJECT_URL` hardcodes `https:\/\/` while `parseRemote` deliberately preserves `http://` + port for on-prem instances (D3) and `runs/task-refs.ts` uses `https?`. An agent printing `http://gitlab.acme.internal:8929/group/repo/-/merge_requests/12` gets no PR chip from the store while the same URL in the prompt IS picked up by task-refs — the two halves disagree about the same run.
+
+#### 4.4-review-fix-2 Keep the foreign-reference guard working on GitLab
+- **major**, found by the end-of-run review. `isRepoScopedRef` (the #945 foreign-URL guard) returns `true` whenever the store has no `RepoHandle`, and the only producer, `resolveRepoHandle`, shells `gh repo view` — so it never answers on a GitLab project and the guard is inert there: a GitLab task citing another project's merge request adopts it as its own subject, the exact defect #945 fixed for GitHub. Resolve a handle for GitLab too (or compare against the parsed project path) and correct the stale comment.
+
+#### 4.5-review-fix Escape every regex metacharacter in bookmarklet hosts
+- **minor**, found by the end-of-run review. `escapeHostDots` escapes `.` only, and the host comes from `new URL(repoUrl).host`, which for an IPv6 instance is `[2001:db8::1]:8929`: spliced into the generated matcher it becomes a character class (wrong matches), and an unbalanced `[` makes the in-page `new RegExp` throw, breaking the bookmarklet entirely.
+
+#### 4.6-review-fix Keep GitHub-event automations on github.com only
+- **major**, found by the end-of-run review. Step 4.6 widened the automations gate from the literal host `github.com` to `forgeKindOfRemote(...) === 'github'`, which now also classifies GitHub **Enterprise** hosts. `automations/github-poller.ts` passes no `cwd` and no `--hostname`, so its `gh api`/`gh search` calls resolve to github.com, and it filters candidates against the literal `https://api.github.com/repos/<owner>/<repo>`. A project on `ghe.acme.corp/acme/widgets` would therefore be offered the GitHub trigger and then poll **github.com/acme/widgets** — a different, possibly stranger's repository — and launch agent runs from its issues. Restore the github.com-only gate for automations (the poller's API shape is github.com's); widening needs a host-aware poller first.
+
+#### 4.3-review-fix Keep the glab probe off the health request path
+- **major**, found by the end-of-run review. `probeGh` deliberately reads local config (`gh auth token`); `probeGlab` runs `glab auth status`, which validates the token against each configured host over the network, with a 10 s timeout, inside `detectEnvironment` → `healthSnapshot`. Offline with `glab` configured, `GET /api/v1/health` can blow the bookmarklet's latency budget and read as absent (CODE_REVIEW.md priority 2: offline must still work). Probe presence locally and fast; leave authentication to the off-path discovery warm-up.
+
+#### 3.4-review-fix Bound the GitLab checks fan-out with one deadline
+- **major**, found by the end-of-run review. `fetchGitlabChecks` fans out up to `GH_CHECKS_MAX` (100) per-MR detail calls at concurrency 5, each with its own 10 s timeout and no shared budget, so a slow instance can hold `GET /github/checks` for minutes and spawn 100 `glab` processes. Every other multi-call GitLab path uses `fetchBoundedPages`'s shared budget. Give the fan-out one deadline and return the glyphs resolved so far.
+
+#### 2.2-review-fix Load the discovery cache before the first request
+- **minor→major for GitHub Enterprise**, found by the end-of-run review. The discovery map is read lazily on first use, which in practice happens inside a request (`/api/v1/projects` → per-project probe), and the boot warm-up is fire-and-forget. Before this branch the `/github*` routes shelled `gh` directly, so a GHE project worked immediately; now, until discovery answers, its host is unclassified and those routes degrade to "No supported forge remote detected". Load the cache eagerly in `createApp` beside the warm-up, and state the remaining first-probe window in the docs.
 
 ## Risks
 

@@ -13,7 +13,7 @@ import type { ForgeKind } from '@open-mercato/cezar-api-client'
  * `forgeKind` is optional (Step 3.8-review-fix): the Suspense-fallback call sites in routes.tsx
  * render before `useHealth()` has ever resolved, so they mount this with no kind at all — which,
  * like everywhere else in the tab, reads as GitHub. Only the route's own fetch-pending render
- * (`github.tsx`, which already has `health.data?.forge?.kind`) passes one in.
+ * (`github.tsx`, which already has the viewed project's kind from `useForgeKind()`) passes one in.
  */
 export function GithubLoading({ forgeKind }: { forgeKind?: ForgeKind } = {}) {
   return (

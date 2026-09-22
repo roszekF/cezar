@@ -763,6 +763,37 @@ export function useProjectRepoBase(): ForgeRepoBase | undefined {
   return isBootProject ? forgeRepoBase(health?.repo?.remote, health?.forge?.kind) : undefined
 }
 
+/**
+ * Which forge the project currently on screen lives on — the one authority for every bit of copy
+ * that names a forge (the tab's title and hint, the document title, the hand-off wording).
+ *
+ * Same boot-project guard, and for the same reason, as `useProjectRepoBase` above: `/health` is
+ * WORKSPACE-level, so its `forge.kind` describes the project cezar launched in whichever project
+ * the URL is scoped to. Reading it per screen labelled a GitLab project's merge requests "Pull
+ * requests", told the user to run `gh auth login` for an unreachable `glab`, and wrote "Address
+ * GitHub pull request #12" into a run's prompt for a merge request (and the mirror case, a GitLab
+ * boot project mislabelling a GitHub one). The registry already carries each project's own
+ * server-classified `forge`, exactly as it carries `repoUrl` — this reads it there.
+ *
+ * Health stays the fallback and stays boot-only (plus the window before the registry answers, in
+ * which every workspace that HAS one project is describing that one project anyway), so a
+ * single-project cockpit — and an unregistered boot folder — answers exactly as it did before.
+ * Undefined means "not proven", which every `forge-display.ts` helper reads as GitHub, today's
+ * text; see `forgeLabel`/`forgeCli`/`forgePrNoun`.
+ */
+export function useForgeKind(): ForgeKind | undefined {
+  const health = useHealth().data
+  const projects = useProjects().data?.projects
+  const { projectId } = useProjectScope()
+  const scopedId = projectId ?? health?.bootProject
+  const registered = scopedId === undefined ? undefined : projects?.find((project) => project.id === scopedId)
+  // `forge` is omitted for a project with no forge remote, and for a registry payload predating
+  // Step 1.2's contract widening — both degrade to the health fallback below, which is boot-only.
+  if (registered?.forge) return registered.forge
+  const isBootProject = projectId === null || projectId === health?.bootProject
+  return isBootProject || projects === undefined ? health?.forge?.kind : undefined
+}
+
 /** The local "Open in…" targets (#open-in). Machine-level and stable, so it caches broadly;
  *  empty in hosted mode. */
 export function useOpenTargets() {

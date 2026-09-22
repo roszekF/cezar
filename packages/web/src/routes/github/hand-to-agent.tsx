@@ -102,8 +102,9 @@ export function HandToAgent({
   /** The run already queued from this item, if any — renders the "✓ queued" affordance. */
   queuedRunId: string | null
   onQueued: (url: string, runId: string) => void
-  /** Which forge the item lives on (`health.forge?.kind`, as the route reads it) — picks the task
-   *  wording `githubTaskRef` writes. Absent reads as GitHub, today's text. */
+  /** Which forge the item lives on (`useForgeKind()`, the VIEWED project's kind as the route
+   *  reads it — Step 3.8-review-fix-2) — picks the task wording `githubTaskRef` writes. Absent
+   *  reads as GitHub, today's text. */
   forgeKind?: ForgeKind | null
 }) {
   const queryClient = useQueryClient()

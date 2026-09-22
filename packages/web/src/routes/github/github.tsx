@@ -23,7 +23,7 @@ import { useParams } from 'react-router'
 import { Link, Navigate } from '@/lib/project-router'
 
 import { getGithub, getGithubComments, getGithubPrChanges, getGithubPrMergeState, mergeGithubPr, putUiState } from '@/api/client'
-import { queryKeys, useGithub, useGithubChecks, useGithubComments, useGithubPrChanges, useGithubSearch, useHealth, useSkills, useUiState, useWorkflows } from '@/api/queries'
+import { queryKeys, useForgeKind, useGithub, useGithubChecks, useGithubComments, useGithubPrChanges, useGithubSearch, useHealth, useSkills, useUiState, useWorkflows } from '@/api/queries'
 import type {
   ForgeKind,
   GithubComment,
@@ -149,9 +149,12 @@ export function GithubRoute({
   // `capabilities?.` because this tab renders against minimal health payloads too; absent is
   // fail-closed, which is the honest answer while the server has not spoken.
   const automationsAvailable = health.data?.capabilities?.automations === true
-  // Which forge this tab is actually showing (spec 2026-08-10, Step 3.8) — an absent kind (health
-  // not loaded yet, or an older server) reads as GitHub, today's text.
-  const forgeKind = health.data?.forge?.kind
+  // Which forge this tab is actually showing (spec 2026-08-10, Step 3.8) — the SCOPED project's
+  // own kind, not the boot project's health-level one (Step 3.8-review-fix-2): `/health` is
+  // workspace-level, so reading it here labelled a GitLab project's merge requests "Pull
+  // requests". An absent kind (nothing loaded yet, or an older server) reads as GitHub, today's
+  // text.
+  const forgeKind = useForgeKind()
   // The plural PR noun this tab's copy reuses everywhere below ("pull requests"/"merge requests")
   // rather than a ternary at each call site (Step 3.8-review-fix).
   const prNoun = forgePrNoun(forgeKind, { plural: true })
@@ -844,8 +847,8 @@ function GithubDetail({
   changes: boolean
   /** Resolved checks glyph — the lazily-hydrated value overrides the list's `null` (#664). */
   checks?: GithubItem['checks']
-  /** `health.forge?.kind` (spec 2026-08-10, Step 3.8) — threaded down to the copy that names the
-   *  forge (the changed-files fallback link, the merge box's fallback reason). */
+  /** The viewed project's forge kind (spec 2026-08-10, Step 3.8) — threaded down to the copy that
+   *  names the forge (the changed-files fallback link, the merge box's fallback reason). */
   forgeKind?: ForgeKind
 }) {
   const kindWord = item.kind === 'pr' ? forgePrNoun(forgeKind) : 'issue'

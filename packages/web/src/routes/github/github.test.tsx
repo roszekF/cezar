@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ProjectScopeContext } from '@/api/project-scope-context'
 import { createQueryClient } from '@/api/query-client'
 import type {
   GithubComment,
@@ -252,9 +253,16 @@ function stubFetch(
  *  is exercised the same way a real navigation would hit it AND `/github` → `/github/issues/:n`
  *  reconciles as one element type instead of remounting (#730). Getting either wrong here would
  *  hide the very bug the "opens a cross-state hit" tests below exist to catch. */
-function renderAt(entry: string) {
+function renderAt(entry: string, scope: string | null = null) {
   render(
     <QueryClientProvider client={createQueryClient()}>
+      {/* The scope CONTEXT only (never `setApiScope`), exactly as `queries.test.tsx` mounts it:
+          the routes below are the flat ones, so requests stay on the unscoped paths `stubFetch`
+          answers, while `useForgeKind` sees the project the URL is standing in. `null` is the
+          provider's own default, so every existing test renders byte-identically. */}
+      <ProjectScopeContext.Provider
+        value={{ projectId: scope, apiBase: scope === null ? '/api/v1' : `/api/v1/p/${scope}` }}
+      >
       <MemoryRouter initialEntries={[entry]}>
         <Routes>
           <Route path="/github" element={<GithubRoute view="issues" index />} />
@@ -270,6 +278,7 @@ function renderAt(entry: string) {
         </Routes>
         <Toaster />
       </MemoryRouter>
+      </ProjectScopeContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -1198,12 +1207,100 @@ describe('the unavailable forge state, and forge-flavored copy across the tab', 
     await waitFor(() => expect(screen.getByText('Loading GitLab…')).toBeTruthy())
     expect(screen.getByText('Fetching open issues and merge requests.')).toBeTruthy()
   })
+
+  // Step 3.8-review-fix-2. `/health` is WORKSPACE-level: it always describes the project cezar
+  // booted in. A workspace whose boot project is GitHub and whose second project is GitLab
+  // therefore listed real merge requests under "Pull requests" and offered `gh auth login` for
+  // an unreachable `glab`. The registry, which carries each project's own server-classified
+  // `forge`, is the authority now (`useForgeKind`) — health only answers for the boot project.
+  describe('in a multi-project workspace the kind follows the VIEWED project', () => {
+    const MIXED_REGISTRY = (bootForge: 'github' | 'gitlab', otherForge: 'github' | 'gitlab') => ({
+      bootProject: 'boot',
+      projectsDir: '/home/me/projects',
+      projects: [
+        { id: 'boot', name: 'boot', root: '/repo', repoUrl: `https://${bootForge}.com/o/boot`, forge: bootForge },
+        { id: 'other', name: 'other', root: '/other', repoUrl: `https://${otherForge}.com/o/other`, forge: otherForge },
+      ],
+    })
+
+    /** Health describes the BOOT project — `bootProject` matches the registry's, as the server's does. */
+    const bootHealth = (kind: 'github' | 'gitlab', available = true) => () =>
+      jsonResponse({ ...health(['claude']), bootProject: 'boot', forge: { kind, available } })
+
+    it('names the tab, its PR noun and the detail link after the scoped GitLab project', async () => {
+      stubFetch({
+        'GET /api/v1/health': bootHealth('github'),
+        'GET /api/v1/projects': () => jsonResponse(MIXED_REGISTRY('github', 'gitlab')),
+      })
+      renderAt('/p/other/github', 'other')
+
+      await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('GitLab'))
+      const tabs = [...document.querySelectorAll('[data-slot="gh-tabs"] a')].map((a) => a.textContent)
+      expect(tabs).toEqual(['Issues · 2', 'Merge requests · 1'])
+      await waitFor(() => expect(detail()?.textContent).toContain('open on GitLab'))
+    })
+
+    it('answers the mirror case too — a GitHub project under a GitLab boot project', async () => {
+      stubFetch({
+        'GET /api/v1/health': bootHealth('gitlab'),
+        'GET /api/v1/projects': () => jsonResponse(MIXED_REGISTRY('gitlab', 'github')),
+      })
+      renderAt('/p/other/github', 'other')
+
+      await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('GitHub'))
+      const tabs = [...document.querySelectorAll('[data-slot="gh-tabs"] a')].map((a) => a.textContent)
+      expect(tabs).toEqual(['Issues · 2', 'Pull requests · 1'])
+    })
+
+    it('points the unavailable hint at the scoped project\'s CLI, not the boot project\'s', async () => {
+      const unavailable: GithubData = { available: false, reason: 'glab not installed', issues: [], prs: [] }
+      stubFetch({
+        'GET /api/v1/github?limit=1000': () => jsonResponse(unavailable),
+        'GET /api/v1/health': bootHealth('github', false),
+        'GET /api/v1/projects': () => jsonResponse(MIXED_REGISTRY('github', 'gitlab')),
+      })
+      renderAt('/p/other/github', 'other')
+
+      await waitFor(() =>
+        expect(screen.getByRole('heading', { level: 1, name: 'GitLab is unavailable here' })).toBeTruthy(),
+      )
+      expect(screen.getByText('glab auth login')).toBeTruthy()
+    })
+
+    it('writes the scoped project\'s wording into the hand-off body', async () => {
+      stubFetch({
+        'GET /api/v1/health': bootHealth('github'),
+        'GET /api/v1/projects': () => jsonResponse(MIXED_REGISTRY('github', 'gitlab')),
+      })
+      await openDetail('/p/other/github/issues/142', 'other')
+
+      await waitFor(() => expect(promptValue()).toBe(githubTaskRef(ISSUE_142, 'gitlab')))
+      expect(promptValue().startsWith('Fix GitLab issue #142:')).toBe(true)
+    })
+
+    it('leaves the BOOT project reading health — a single-project workspace is untouched', async () => {
+      // One registered project, and it is the boot project: health is still the only answer,
+      // and it is describing this very project.
+      stubFetch({
+        'GET /api/v1/health': bootHealth('gitlab'),
+        'GET /api/v1/projects': () =>
+          jsonResponse({
+            bootProject: 'boot',
+            projectsDir: '/home/me/projects',
+            projects: [{ id: 'boot', name: 'boot', root: '/repo' }],
+          }),
+      })
+      renderAt('/github')
+
+      await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('GitLab'))
+    })
+  })
 })
 
 // ---- hand to agent ----------------------------------------------------------------------------
 
-async function openDetail(entry = '/github/issues/142') {
-  renderAt(entry)
+async function openDetail(entry = '/github/issues/142', scope: string | null = null) {
+  renderAt(entry, scope)
   await waitFor(() => expect(document.querySelector('[data-slot="gh-hand"]')).not.toBeNull())
 }
 

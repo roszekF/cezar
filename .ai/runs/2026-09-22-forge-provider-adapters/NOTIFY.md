@@ -32,3 +32,11 @@
 - typecheck, npm test (7 407), test:unit (36) green. No UI touched → browser pass skipped.
 - Note: running npm run test:e2e rewrites committed screenshots under .ai/runs/2026-07-22-automatic-open-mercato-skills-updates/checkpoint-3-artifacts/ (skills-update.e2e side effect); restored with git checkout after checkpoint 2 — never commit them from this branch.
 - Delegations: 2.1 (standard/sonnet), 2.2 (capable/opus), 2.3+2.4 one executor (sonnet).
+
+## 2026-09-22T15:16:05Z — checkpoint 4 (3.1..3.5 + 3.2-review-fix)
+- typecheck, npm test (7 477/7 478; 1 unrelated web timing flake, passes alone), test:unit green. No UI touched.
+- Fixed a branch-introduced flake inline (3.2-review-fix, 927f232b).
+- Delegations: 3.1 (capable/opus), 3.2, 3.3, 3.4+3.5 (standard/sonnet).
+
+## 2026-09-22T15:16:05Z — blocker: safety checkpoint — paused for operator review
+- 20 plan rows done (12 plan Steps of Phases 1–2, 5 of Phase 3, 3 review-fix rows). Executor-dispatch safety rule: stop after ~20 consecutive Steps and let the user review. PR stays draft, Status: in-progress; lock released. Resume: om-auto-continue-pr-loop 1.

@@ -25,11 +25,11 @@
 | 2 | 2.2 | Wire discovery into forge/index.ts and the boot warm-up | dispatch:capable | done | 84ecc7dd |
 | 2 | 2.3 | Carry path and web origin on ParsedRemote | dispatch | done | ce018c43 |
 | 2 | 2.4 | Build the GitHub viewUrl from the parsed origin | dispatch:cheap | done | ec1ee5e8 |
-| 3 | 3.1 | GitLab driver skeleton with detect and registration | dispatch:capable | done | pending |
-| 3 | 3.2 | GitLab listIssues and listPRs | dispatch | done | pending |
-| 3 | 3.3 | GitLab listComments with timeline events | dispatch | done | pending |
-| 3 | 3.4 | GitLab listChecks and prStatus | dispatch | done | pending |
-| 3 | 3.5 | GitLab prDiff with forge-neutral caps | dispatch | done | pending |
+| 3 | 3.1 | GitLab driver skeleton with detect and registration | dispatch:capable | done | 8209bd0d |
+| 3 | 3.2 | GitLab listIssues and listPRs | dispatch | done | 0d5cd2ee |
+| 3 | 3.3 | GitLab listComments with timeline events | dispatch | done | bbd3f755 |
+| 3 | 3.4 | GitLab listChecks and prStatus | dispatch | done | c9217a48 |
+| 3 | 3.5 | GitLab prDiff with forge-neutral caps | dispatch | done | c5978f60 |
 | 3 | 3.6 | GitLab searchItems | dispatch:cheap | todo | — |
 | 3 | 3.7 | GitLab viewUrl | dispatch:cheap | todo | — |
 | 3 | 3.8 | Cockpit forge label, icon and copy from health.forge.kind | dispatch | todo | — |
@@ -43,7 +43,7 @@
 | 4 | 4.7 | Documentation for the second forge | inline | todo | — |
 | 1 | 1.7-review-fix | Type the driver-stub test payloads explicitly | inline | done | 5f7bae12 |
 | 1 | 1.8-review-fix | Keep the pre-seam draft-PR path when no forge resolves | inline | done | 7ec3ab5f |
-| 3 | 3.2-review-fix | Freeze the clock in the GitLab dry-run list test | inline | done | pending |
+| 3 | 3.2-review-fix | Freeze the clock in the GitLab dry-run list test | inline | done | 927f232b |
 
 ## Goal
 

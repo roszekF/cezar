@@ -1,19 +1,19 @@
 # Handoff — 2026-09-22-forge-provider-adapters
 
-**Last updated:** 2026-09-22T14:33:29Z
+**Last updated:** 2026-09-22T15:16:05Z
 **Branch:** feat/forge-provider-adapters (fork roszekF/cezar)
 **PR:** https://github.com/roszekF/cezar/pull/1 (draft)
-**Current phase/step:** Phase 3 Step 3.1
-**Last commit:** ec1ee5e8 — feat(forge): build GitHub web links from the remote's own origin
+**Current phase/step:** Phase 3 Step 3.6 (paused for operator review at the ~20-Step safety checkpoint)
+**Last commit:** 927f232b — test(forge): freeze the clock in the GitLab dry-run list test
 
 ## What just happened
-- Phase 2 complete (2.1–2.4): discovery module + cache, host ladder wired into forge/index.ts with a boot/10-min warm-up, ParsedRemote.path/origin, GitHub viewUrl from origin. Checkpoint 3 green.
+- Phase 3 read paths 3.1–3.5 landed (GitLab detect, lists, comments/timeline, checks, prStatus, diffs) + 3.2-review-fix. Checkpoint 4 green (1 unrelated load flake). Run paused for operator review per the executor-dispatch safety checkpoint (20 plan rows done).
 
 ## Next concrete action
-- Implement Step 3.1 — forge/gitlab.ts skeleton + detect() (glab repo view --output json, SWR cache, web_url cache, registerProjectCacheEvictor) and register it in resolveForge for gitlab hosts.
+- Resume with om-auto-continue-pr-loop 1 (fork roszekF/cezar) → Step 3.6 GitLab searchItems, then 3.7 viewUrl, 3.8 cockpit copy, 3.9 task chips, Phase 4.
 
 ## Blockers / open questions
-- none
+- none technical. Transitional state on the branch: GitHub-event automations still see a GitLab driver as "available" until Step 4.6; GitLab viewUrl returns null until 3.7; GitLab draft MR returns an error until 4.1.
 
 ## Environment caveats
 - Dev runtime runnable: yes (npm ci done in the worktree)

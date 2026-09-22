@@ -1,4 +1,4 @@
-import type { ProcessUsage, RunRecord, RunStatus } from '@open-mercato/cezar-api-client'
+import type { ForgeKind, ProcessUsage, RunRecord, RunStatus } from '@open-mercato/cezar-api-client'
 import { groupTitle, runTitle, type ListView } from '@/lib/task-groups'
 
 /**
@@ -106,26 +106,78 @@ export function finishedRunCount(runs: readonly RunRecord[]): number {
   return runs.filter((run) => !run.archived && FINISHED_STATUSES.has(run.status)).length
 }
 
-/** A git remote as a GitHub web root (`https://github.com/owner/repo`) — the caller passes the
- *  remote `/api/v1/health` reports (`repo.remote`), via `useProjectRepoBase`. Handles the scheme forms
- *  (`https://`, `ssh://`, credentials, port) and the scp-like `git@github.com:owner/repo.git`;
- *  undefined for every non-github.com host, local path, or absent remote — the cockpit only knows
- *  how to spell GitHub issue URLs. Mirrors the server's `parseRemote` (`src/server/forge/index.ts`),
- *  duplicated rather than imported because that module is server-only. */
-export function githubRepoBase(remote: string | undefined): string | undefined {
+/** The forge hosts this cockpit can classify on its own, with no discovery cache of its own to
+ *  consult (mirrors `WELL_KNOWN_FORGE_HOSTS` in `server/forge/discovery.ts`) — used only when
+ *  `forgeRepoBase` is called with no `kind` of its own. */
+const WELL_KNOWN_FORGE_HOSTS: Record<string, ForgeKind> = {
+  'github.com': 'github',
+  'gitlab.com': 'gitlab',
+}
+
+export interface ForgeRepoBase {
+  /** The remote's web root, e.g. `https://gitlab.acme.internal/group/sub/repo`. */
+  base: string
+  /** Optional so callers built from a registry entry (`useProjectRepoBase`) can carry a
+   *  `repoUrl` whose sibling `forge` field is missing (an older payload) without a cast —
+   *  `forgeRepoBase` itself always resolves a kind before returning a value. */
+  kind?: ForgeKind
+}
+
+/**
+ * A git remote as a forge web root + kind (`https://github.com/owner/repo`, `'github'`) — the
+ * caller passes the remote `/api/v1/health` or the project registry reports, via
+ * `useProjectRepoBase`. Handles the scheme forms (`https://`, `ssh://`, credentials, port) and the
+ * scp-like `git@host:owner/repo.git`; undefined for a host this cockpit cannot place, a local
+ * path, or an absent remote.
+ *
+ * `kind`, when given, is the project's OWN forge kind as the SERVER discovered it (registry
+ * `forge`, or `health.forge?.kind`) — the cockpit has no discovery cache of its own, so a
+ * self-managed instance is only ever accepted when the server already vouches for its host.
+ * Without a `kind`, only the well-known hosts above are recognized.
+ *
+ * Mirrors the server's `parseRemote`/`forgeWebRoot` (`src/server/forge/index.ts`), duplicated
+ * rather than imported because that module is server-only, INCLUDING the subgroup/origin rules
+ * from spec 2026-08-10-forge-provider-adapters Step 2.3 — change both parsers in the same commit:
+ * `path` is the full project path (`.git` stripped, subgroups kept); `http(s)://` remotes keep
+ * their own scheme and port; every other transport (`ssh://`, `git://`, `git+ssh://`, scp-form)
+ * maps to `https://<host>` with no port; credentials are never carried into the built base.
+ */
+export function forgeRepoBase(remote: string | undefined, kind?: ForgeKind): ForgeRepoBase | undefined {
   if (!remote) return undefined
   const trimmed = remote.trim().replace(/\/+$/, '')
-  const url = /^(?:https?|ssh|git|git\+ssh):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/.exec(trimmed)
-  // scp-like: [user@]host:owner/repo(.git) — a leading '/' (local path) can't match the host group.
-  const scp = url ? null : /^(?:[^@/:]+@)?([^:/]+):(.+)$/.exec(trimmed)
-  const match = url ?? scp
-  if (!match) return undefined
-  const [, host, path] = match
-  if (!path || host?.toLowerCase() !== 'github.com') return undefined
-  const parts = path.replace(/\.git$/i, '').split('/').filter(Boolean)
+  let host: string
+  let rawPath: string
+  let origin: string
+  const url = /^(https?|ssh|git|git\+ssh):\/\/(?:[^@/]+@)?([^/:]+)(?::(\d+))?\/(.+)$/.exec(trimmed)
+  if (url) {
+    const [, scheme, h, port, p] = url
+    if (!scheme || !h || !p) return undefined
+    host = h
+    rawPath = p
+    // http(s) remotes keep their own scheme and port — an on-prem instance may run on a
+    // non-default port, and that is a genuine part of its web origin. Every other transport
+    // below maps to the plain https web origin with no port.
+    origin = /^https?$/i.test(scheme)
+      ? `${scheme.toLowerCase()}://${h.toLowerCase()}${port ? `:${port}` : ''}`
+      : `https://${h.toLowerCase()}`
+  } else {
+    // scp-like: [user@]host:owner/repo(.git) — a leading '/' (local path)
+    // can't match the host group, so plain directories fall through to undefined.
+    const scp = /^(?:[^@/:]+@)?([^:/]+):(.+)$/.exec(trimmed)
+    if (!scp) return undefined
+    const [, h, p] = scp
+    if (!h || !p) return undefined
+    host = h
+    rawPath = p
+    origin = `https://${h.toLowerCase()}`
+  }
+  const parts = rawPath.replace(/\.git$/i, '').split('/').filter(Boolean)
   const owner = parts[parts.length - 2]
   const repo = parts[parts.length - 1]
-  return owner && repo ? `https://github.com/${owner}/${repo}` : undefined
+  if (!owner || !repo) return undefined
+  const resolvedKind = kind ?? WELL_KNOWN_FORGE_HOSTS[host.toLowerCase()]
+  if (!resolvedKind) return undefined
+  return { base: `${origin}/${parts.join('/')}`, kind: resolvedKind }
 }
 
 /** The URL a PR *display* chip shows: the PR the task created, else the PR the conversation
@@ -159,8 +211,13 @@ function prUrls(run: TaskReferenceInput): string[] {
  *
  * `repoBase` is the repository of the project on screen (`useProjectRepoBase()`) and is the only
  * authority a *synthesized* link may be built on. Callers without it get today's behavior:
- * a discovered URL or nothing. */
-export function taskIssueUrl(run: TaskReferenceInput, repoBase?: string): string | undefined {
+ * a discovered URL or nothing. `forgeKind` picks the URL grammar (Step 3.9) — absent or `'github'`
+ * is today's `/issues/N`; `'gitlab'` is `/-/issues/N`. */
+export function taskIssueUrl(
+  run: TaskReferenceInput,
+  repoBase?: string,
+  forgeKind?: ForgeKind,
+): string | undefined {
   if (run.referencedIssueUrl) return run.referencedIssueUrl
   // #526: an issue-subject run (om-prepare-issue) knows its issue number from the CEZ:ISSUE
   // marker even when no full `…/issues/N` link was ever scanned into referencedIssueUrl.
@@ -170,7 +227,7 @@ export function taskIssueUrl(run: TaskReferenceInput, repoBase?: string): string
   // wrong-link defect #526 exists to kill, just pointing at an issue instead of a PR.
   const number = run.markerRefs?.issue ?? run.issueNumber
   if (!number || !repoBase) return undefined
-  return `${repoBase}/issues/${number}`
+  return forgeReferenceUrl(repoBase, 'Issue', number, forgeKind)
 }
 
 /**
@@ -245,7 +302,7 @@ export interface TaskReference {
  *
  * Deduped by kind+number, so one reference reached through two fields stays one chip.
  */
-export function taskReferences(run: TaskReferenceInput, repoBase?: string): TaskReference[] {
+export function taskReferences(run: TaskReferenceInput, repoBase?: string, forgeKind?: ForgeKind): TaskReference[] {
   const prs = prUrls(run)
   const declared = run.markerRefs?.pr
   const sources: { kind: TaskReference['kind']; url?: string; number?: number }[] = [
@@ -259,7 +316,7 @@ export function taskReferences(run: TaskReferenceInput, repoBase?: string): Task
     // Numeric-only: a reference known by number before any URL was scraped. `repoBase` turns it
     // into a real link — see the synthesis note below.
     { kind: 'PR', number: run.prNumber },
-    { kind: 'Issue', url: taskIssueUrl(run, repoBase) },
+    { kind: 'Issue', url: taskIssueUrl(run, repoBase, forgeKind) },
     { kind: 'Issue', number: run.issueNumber },
   ]
 
@@ -275,7 +332,7 @@ export function taskReferences(run: TaskReferenceInput, repoBase?: string): Task
     // `taskIssueUrl` already applies, and the same hard limit: only ever the project's repo,
     // never a URL scraped from a transcript, which routinely names another repository (#526).
     // Without a `repoBase` the chip stays inert text rather than linking somewhere invented.
-    const url = source.url ?? synthesizeUrl(source.kind, number, repoBase)
+    const url = source.url ?? synthesizeUrl(source.kind, number, repoBase, forgeKind)
     references.push({ kind: source.kind, number, ...(url ? { url } : {}) })
   }
   return references
@@ -286,8 +343,22 @@ function synthesizeUrl(
   kind: TaskReference['kind'],
   number: number,
   repoBase: string | undefined,
+  forgeKind: ForgeKind | undefined,
 ): string | undefined {
   if (!repoBase) return undefined
+  return forgeReferenceUrl(repoBase, kind, number, forgeKind)
+}
+
+/** `#402`/`!402` at a forge base — GitLab's `/-/merge_requests/N` and `/-/issues/N` grammar for
+ *  `forgeKind === 'gitlab'`, GitHub's `/pull/N` and `/issues/N` (today's exact strings) otherwise.
+ *  An absent or unrecognized kind reads as GitHub, matching `lib/forge-display.ts`. */
+function forgeReferenceUrl(
+  repoBase: string,
+  kind: TaskReference['kind'],
+  number: number,
+  forgeKind: ForgeKind | undefined,
+): string {
+  if (forgeKind === 'gitlab') return `${repoBase}/-/${kind === 'PR' ? 'merge_requests' : 'issues'}/${number}`
   return `${repoBase}/${kind === 'PR' ? 'pull' : 'issues'}/${number}`
 }
 

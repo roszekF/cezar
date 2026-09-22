@@ -1038,8 +1038,8 @@ describe('useProjectRepoBase', () => {
   }
 
   const REGISTRY = [
-    { id: 'boot-id', name: 'boot', root: '/home/me/cezar', repoUrl: 'https://github.com/o/boot' },
-    { id: 'proj-a', name: 'a', root: '/home/me/a', repoUrl: 'https://github.com/o/a' },
+    { id: 'boot-id', name: 'boot', root: '/home/me/cezar', repoUrl: 'https://github.com/o/boot', forge: 'github' },
+    { id: 'proj-a', name: 'a', root: '/home/me/a', repoUrl: 'https://github.com/o/a', forge: 'github' },
     { id: 'proj-b', name: 'b', root: '/home/me/b' },
   ]
 
@@ -1050,7 +1050,7 @@ describe('useProjectRepoBase', () => {
     const { result } = renderHook(() => useProjectRepoBase(), {
       wrapper: mounted('proj-a', { ...HEALTH, bootProject: 'boot-id', repo: { remote: 'git@github.com:o/boot.git' } }, REGISTRY),
     })
-    expect(result.current).toBe('https://github.com/o/a')
+    expect(result.current).toEqual({ base: 'https://github.com/o/a', kind: 'github' })
   })
 
   it('never hands a project the boot repo — #526', () => {
@@ -1066,7 +1066,7 @@ describe('useProjectRepoBase', () => {
     const { result } = renderHook(() => useProjectRepoBase(), {
       wrapper: mounted(null, { ...HEALTH, bootProject: 'boot-id', repo: { remote: 'git@github.com:o/boot.git' } }, []),
     })
-    expect(result.current).toBe('https://github.com/o/boot')
+    expect(result.current).toEqual({ base: 'https://github.com/o/boot', kind: 'github' })
   })
 })
 

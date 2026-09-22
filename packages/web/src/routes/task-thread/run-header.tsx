@@ -702,12 +702,12 @@ function MetaRow({
 }) {
   // #526: the issue chip may be synthesized from the CEZ:ISSUE marker, and the only repository
   // such a link may name is the one on screen — never the transcript's.
-  const repoBase = useProjectRepoBase()
+  const { base: repoBase, kind: forgeKind } = useProjectRepoBase() ?? {}
   // At most two references here, so this is a batch of one or two rather than of a table — but it
   // goes through the same seam, which is what keeps the header's chip and the table's chip
   // answering identically for the same PR.
   const projectId = useReferenceProjectId()
-  const references = useMemo(() => taskReferences(run, repoBase), [run, repoBase])
+  const references = useMemo(() => taskReferences(run, repoBase, forgeKind), [run, repoBase, forgeKind])
   const referenceRequests = useMemo(
     () =>
       projectId === undefined
@@ -768,7 +768,7 @@ function MetaRow({
       />,
     )
   }
-  const issueUrl = taskIssueUrl(run, repoBase)
+  const issueUrl = taskIssueUrl(run, repoBase, forgeKind)
   if (issueUrl && isHttpUrl(issueUrl)) {
     const number = prNumber(issueUrl)
     parts.push(

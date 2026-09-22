@@ -52,9 +52,9 @@ export interface ParsedRemote {
  * scp-like form (`git@host:owner/repo.git`). Null for local paths and anything else that doesn't
  * look like a forge remote.
  *
- * Mirror rule: `web/src/lib/tasks-table.ts` `githubRepoBase` is a documented duplicate of this
- * parser (cockpit code can't import server code) — change both in the same commit (Step 3.9 widens
- * the web copy the same way).
+ * Mirror rule: `web/src/lib/tasks-table.ts` `forgeRepoBase` is a documented duplicate of this
+ * parser (cockpit code can't import server code) — change both in the same commit (spec
+ * 2026-08-10-forge-provider-adapters Step 3.9 widened the web copy the same way).
  */
 export function parseRemote(remote: string): ParsedRemote | null {
   const r = remote.trim().replace(/\/+$/, '');

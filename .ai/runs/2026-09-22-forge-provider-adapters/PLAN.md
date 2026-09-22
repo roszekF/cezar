@@ -33,7 +33,7 @@
 | 3 | 3.6 | GitLab searchItems | dispatch:cheap | done | pending |
 | 3 | 3.7 | GitLab viewUrl | dispatch:cheap | done | pending |
 | 3 | 3.8 | Cockpit forge label, icon and copy from health.forge.kind | dispatch | done | pending |
-| 3 | 3.9 | Forge-neutral task reference chips in the cockpit | dispatch | todo | — |
+| 3 | 3.9 | Forge-neutral task reference chips in the cockpit | dispatch | done | pending |
 | 4 | 4.1 | GitLab draft merge request creation | dispatch:capable | todo | — |
 | 4 | 4.2 | Clone from a GitLab remote | dispatch:capable | todo | — |
 | 4 | 4.3 | Host tooling, agent env and redaction for glab | dispatch | todo | — |

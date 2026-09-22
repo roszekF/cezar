@@ -57,6 +57,18 @@
 | 3 | 3.4-review-fix | Bound the GitLab checks fan-out with one deadline | dispatch | done | 28636fcf |
 | 2 | 2.2-review-fix | Load the discovery cache before the first request | dispatch | done | cccbd9fd |
 | 4 | 4.4-review-fix-3 | Restore the partial forge mock in the repo-handle test | inline | done | e340385d |
+| 5 | 5.1 | Reclaim a lease whose age exactly equals the window | dispatch | done | pending |
+| 5 | 5.2 | Trim and validate the host in parseRemote and checkout | dispatch | todo | — |
+| 5 | 5.3 | Share one budget across the glab probe reads | dispatch:cheap | todo | — |
+| 5 | 5.4 | Count GitLab diff lines without dropping content | dispatch:cheap | todo | — |
+| 5 | 5.5 | Read every auth-status host line in discovery | dispatch | todo | — |
+| 5 | 5.6 | Drop the non-null assertions in the GitLab adapter | dispatch:cheap | todo | — |
+| 5 | 5.7 | Match http GitLab hosts in the bookmarklet | dispatch | todo | — |
+| 5 | 5.8 | Seed gitlab.com only for a registered GitLab project | dispatch | todo | — |
+| 5 | 5.9 | Make the foreign-reference guard host-aware | dispatch:capable | todo | — |
+| 5 | 5.10 | Forge-aware copy in the reference-status chip | dispatch | todo | — |
+| 5 | 5.11 | Correct the Second forge compatibility claims | inline | todo | — |
+| 5 | 5.12 | Land the spec so its citations resolve | inline | todo | — |
 
 ## Goal
 
@@ -300,6 +312,46 @@ All GitLab calls run `glab` with `cwd = repoRoot` through `forge/cli.ts`; `glab 
 
 #### 4.4-review-fix-3 Restore the partial forge mock in the repo-handle test
 - Collision between two review fixes made in parallel: 3.4-review-fix made `forge/gitlab.ts` import `TIMELINE_BUDGET_MS` from `forge/github.ts`, while 4.4-review-fix-2's new `arm-repo-handle.test.ts` mocks that module with a bare factory — so the whole file failed to collect (`No "TIMELINE_BUDGET_MS" export is defined on the mock`). The mock now spreads `importOriginal()`.
+
+### Phase 5 — Second-pass review fixes
+
+Found by the independent second review of the finished branch (its report is the PR comment; severities as given there). 5.1 is the only blocker: the validation gate was red.
+
+#### 5.1 Reclaim a lease whose age exactly equals the window
+- **blocker (gate red).** `automations/store.ts` `isLeaseAbandoned` compares `now - mtimeMs > staleAfterMs`, so `acquireLease(0)` does not reclaim a lock whose mtime falls in the same millisecond, and `automations/store.test.ts` "falls back to the age rule for a lock whose pid cannot be read" fails (1 in 3 isolated runs; also red on `main`). Use `>=` so a window of `0` means "reclaim now", and make the test drive the injected clock rather than race it.
+
+#### 5.2 Trim and validate the host in parseRemote and checkout
+- **minor.** `parseRemote` captures the host as `[^/:]+`, admitting spaces and newlines; classification trims but `origin` keeps the raw bytes, so `https://gitlab.com /group/repo` passes checkout's 400 gate and a malformed origin reaches `repoUrl` on `GET /api/v1/projects`. Trim and hostname-validate at the parse, and check the host in `parseGitlabRef` as the path segments already are.
+
+#### 5.3 Share one budget across the glab probe reads
+- **minor.** `probeGlab`'s two local reads are sequential with the full timeout each, so its worst case in the health snapshot is 5 s rather than the 2.5 s the fix was sized for.
+
+#### 5.4 Count GitLab diff lines without dropping content
+- **minor.** `countDiffLines` skips any line starting with `+++`/`---` to avoid diff headers, but GitLab's `diffs` payload carries hunks only — so it drops real content lines and under-reports a diff that deletes a `---` YAML fence.
+
+#### 5.5 Read every auth-status host line in discovery
+- **minor.** `parseAuthHosts` reads unindented header lines only, though its docstring and Step 2.1 promise the `Logged in to <host>` lines too; a CLI that re-words or indents the header silently yields zero hosts and every Enterprise/self-managed project degrades with no diagnostic.
+
+#### 5.6 Drop the non-null assertions in the GitLab adapter
+- **nit.** `items[index]!`, `first!`, `counts[i]!` silence the checker where narrowing would do (CODE_REVIEW.md § TypeScript strictness); also import `GLAB_NOT_FOUND_REASON` in `checkout.ts` instead of duplicating its text.
+
+#### 5.7 Match http GitLab hosts in the bookmarklet
+- **minor.** The generated matcher is pinned to `https://` while the harvested hosts preserve `http` + port for on-prem, so a self-hosted instance is collected and can never match — the same defect 4.4-review-fix fixed in `runs/store.ts`, in the third copy of the shape.
+
+#### 5.8 Seed gitlab.com only for a registered GitLab project
+- **minor.** `gitlabHostsFromProjects` always seeds `gitlab.com`, so every production launcher gets the GitLab alternation and the wider alert, making the "GitHub output byte-identical" claim true only of a default no caller uses.
+
+#### 5.9 Make the foreign-reference guard host-aware
+- **minor.** `RepoHandle` carries no host and the GitLab URL pattern accepts any host, so two instances sharing a project path are indistinguishable: a task on `gitlab.com/acme/widgets` adopts a mirror's `gitlab.internal.corp/acme/widgets` merge request as its own subject. Before this branch only github.com URLs reached the guard.
+
+#### 5.10 Forge-aware copy in the reference-status chip
+- **minor.** `components/reference-chip.tsx` was outside the Step 3.8 sweep, so a GitLab task's chip tooltip still reads "Checking GitHub…" / "GitHub has no such number here".
+
+#### 5.11 Correct the Second forge compatibility claims
+- **minor.** Three claims in `BACKWARD_COMPATIBILITY.md` are not true of the code: `POST /github/prs/:number/merge` answers `409 {error}` rather than the in-payload degradation; `repoUrl` is not byte-identical for an `http://github.com/...` remote (D3 preserves the scheme); and the `checkoutSchema` validator message is a third 400-text change.
+
+#### 5.12 Land the spec so its citations resolve
+- **minor.** ~112 code comments plus `AGENTS.md` and `BACKWARD_COMPATIBILITY.md` cite `.ai/specs/2026-08-10-forge-provider-adapters.md`, which is committed only on `spec/forge-provider-adapters`. On this fork there is no spec PR to merge it, so the implementation branch carries the spec (rebased copy, unchanged) and every citation resolves.
 
 ## Risks
 

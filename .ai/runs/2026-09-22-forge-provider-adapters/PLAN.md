@@ -48,15 +48,15 @@
 | 3 | 3.1-review-fix | Name GitLab in the merge-state fallback | inline | done | b9f7d22b |
 | 4 | 4.2-review-fix | Persist the glab credential helper after a GitLab clone | dispatch | done | b22c4a50 |
 | 4 | 4.5-ds-fix | Keep the design guardian green in the bookmarklet test | inline | done | 1a1260f8 |
-| 3 | 3.8-review-fix-2 | Forge kind per viewed project, not the boot project | dispatch | done | pending |
-| 4 | 4.4-review-fix | Match http and on-prem ports in GitLab run-bookkeeping URLs | dispatch | done | pending |
-| 4 | 4.4-review-fix-2 | Keep the foreign-reference guard working on GitLab | dispatch | done | pending |
-| 4 | 4.5-review-fix | Escape every regex metacharacter in bookmarklet hosts | dispatch | done | pending |
-| 4 | 4.6-review-fix | Keep GitHub-event automations on github.com only | dispatch | done | pending |
-| 4 | 4.3-review-fix | Keep the glab probe off the health request path | dispatch | done | pending |
-| 3 | 3.4-review-fix | Bound the GitLab checks fan-out with one deadline | dispatch | done | pending |
-| 2 | 2.2-review-fix | Load the discovery cache before the first request | dispatch | done | pending |
-| 4 | 4.4-review-fix-3 | Restore the partial forge mock in the repo-handle test | inline | done | pending |
+| 3 | 3.8-review-fix-2 | Forge kind per viewed project, not the boot project | dispatch | done | 13e2fbc1 |
+| 4 | 4.4-review-fix | Match http and on-prem ports in GitLab run-bookkeeping URLs | dispatch | done | ee513720 |
+| 4 | 4.4-review-fix-2 | Keep the foreign-reference guard working on GitLab | dispatch | done | 21029c40 |
+| 4 | 4.5-review-fix | Escape every regex metacharacter in bookmarklet hosts | dispatch | done | b614b2d8 |
+| 4 | 4.6-review-fix | Keep GitHub-event automations on github.com only | dispatch | done | 92973497 |
+| 4 | 4.3-review-fix | Keep the glab probe off the health request path | dispatch | done | 50b6bfd1 |
+| 3 | 3.4-review-fix | Bound the GitLab checks fan-out with one deadline | dispatch | done | 28636fcf |
+| 2 | 2.2-review-fix | Load the discovery cache before the first request | dispatch | done | cccbd9fd |
+| 4 | 4.4-review-fix-3 | Restore the partial forge mock in the repo-handle test | inline | done | e340385d |
 
 ## Goal
 

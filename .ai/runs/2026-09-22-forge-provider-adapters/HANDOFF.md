@@ -1,16 +1,16 @@
 # Handoff — 2026-09-22-forge-provider-adapters
 
-**Last updated:** 2026-09-22T17:02:51Z
+**Last updated:** 2026-09-22T18:36:59Z
 **Branch:** feat/forge-provider-adapters (fork roszekF/cezar)
-**PR:** https://github.com/roszekF/cezar/pull/1 (draft)
-**Current phase/step:** Phase 4 Step 4.5
-**Last commit:** 2a49957a — feat(forge): run bookkeeping and hand-off wording learn GitLab
+**PR:** https://github.com/roszekF/cezar/pull/1 (ready for review)
+**Current phase/step:** complete — 31 plan rows + 13 fix rows done, final gate passed, review fixes landed
+**Last commit:** e340385d — test(runs): restore the partial forge mock in the repo-handle test
 
 ## What just happened
-- 4.1–4.4 + 4.2-review-fix landed: GitLab draft MRs, clone from GitLab (+ credential helper), glab host tooling/env/redaction/installer, GitLab URL bookkeeping + hand-off wording. Checkpoint 6 green with a browser pass.
+- Run complete. Phase 4 landed, the full gate passed, the end-of-run review returned request-changes with 6 majors (one introduced by Step 4.6 — GitHub Enterprise automations), all fixed and re-gated: 7 665/7 665 unit tests green.
 
 ## Next concrete action
-- Implement Step 4.5 — bookmarklet matcher from discovered hosts; then 4.6 automations availability, 4.7 docs, then the final gate.
+- Human review + QA on a real GitLab project (the PR carries needs-qa). Nothing is owed by the automation.
 
 ## Blockers / open questions
 - none. Pushes go over HTTPS with gh credentials (SSH agent stopped signing): git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push https://github.com/roszekF/cezar.git feat/forge-provider-adapters

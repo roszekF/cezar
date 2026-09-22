@@ -58,3 +58,12 @@
 - 4.2-review-fix raised by the 4.2 executor (GitLab clone credential helper) and fixed.
 - Tracker-descriptor note: attach-image-evidence's "branch exists?" probe (GET git/refs/heads/<name>) prefix-matches, so on this fork (which inherited qa-evidence-checkpoint-5-pr-521 from upstream) it skipped creating qa-evidence-checkpoint-5; created explicitly with git/ref (singular). Worth fixing in .ai/trackers/github.md upstream.
 - Delegations: 4.1 (opus), 4.2 (opus), 4.2-review-fix (sonnet), 4.3 (sonnet), 4.4 (opus).
+
+## 2026-09-22T18:36:59Z — final gate + authoritative review
+- Full gate on 1a1260f8: typecheck/test:unit/build/test:package green; npm test found a real design-guardian regression (fixed as 4.5-ds-fix) plus the known load flake.
+- Integration suite: fails on this machine on main too (branch 42 vs main 37 in the final runs, unstable); exactly one spec failed on the branch in both full runs and not on main (composer-defaults) — isolated re-runs: branch 5/5 pass, main 4/5. Recorded as environmental.
+- Review (2 reviewers, 100 files): request changes, 6 majors + 2 minors. One major was introduced by this run's Step 4.6 (GHE automations would poll github.com). All 9 fixes landed with failing-first tests; gate re-run green at 7 665/7 665.
+- Deferred items (7) recorded in final-gate-checks.md; the two GHE gaps deserve follow-up issues upstream.
+
+## 2026-09-22T18:36:59Z — run completed
+- PR roszekF/cezar#1 flipped to ready; labels review/feature/needs-qa/priority-medium/risk-high; review + summary posted. Lock released.

@@ -2822,6 +2822,9 @@ export function createGithubDriver(repoRoot: string, repoRef: GithubRepoRef | nu
     // The conversation thread for one issue/PR (#499, #525) — byte-identical payload.
     listComments: (kind, number, opts) => fetchGithubComments(repoRoot, kind, number, !!opts?.refresh),
 
+    // Lazy CI glyphs for on-screen PR rows (#664) — byte-identical payload.
+    listChecks: (numbers) => fetchGithubChecks(repoRoot, numbers),
+
     prDiff: (number, opts) => fetchGithubPrDiff(repoRoot, number, opts?.refresh),
 
     createPR: (input) => createDraftPr(input),

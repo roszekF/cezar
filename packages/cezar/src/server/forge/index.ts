@@ -1,6 +1,6 @@
 import type { RepoInfo } from '../git.ts';
 import { createGithubDriver } from './github.ts';
-import type { ForgeCommentsData, ForgeDriver, ForgeKind, ForgeListData, ForgeListOptions, ForgeSearchData } from './types.ts';
+import type { ForgeChecksData, ForgeCommentsData, ForgeDriver, ForgeKind, ForgeListData, ForgeListOptions, ForgeSearchData } from './types.ts';
 
 /**
  * Forge resolution (cockpit-ui redesign spec §"Forge-driver seam"): map the
@@ -137,6 +137,18 @@ export async function listForgeComments(
   if (!forge) return { available: false, reason: NO_FORGE_REASON, comments: [] };
   if (!forge.listComments) return { available: false, reason: `Comments are not supported for this ${forge.kind} remote`, comments: [] };
   return forge.listComments(kind, number, opts);
+}
+
+/**
+ * The `GET /api/github/checks` lazy CI glyphs through the driver seam (#664, spec
+ * 2026-08-10-forge-provider-adapters). A null forge, or one without `listChecks`, degrades in the
+ * payload — the route never 5xxs over a missing capability. Unlike the other degrade payloads this
+ * one has no list field to empty (`ForgeChecksData`'s unavailable branch carries only `reason`).
+ */
+export async function listForgeChecks(forge: ForgeDriver | null, numbers: number[]): Promise<ForgeChecksData> {
+  if (!forge) return { available: false, reason: NO_FORGE_REASON };
+  if (!forge.listChecks) return { available: false, reason: `CI checks are not supported for this ${forge.kind} remote` };
+  return forge.listChecks(numbers);
 }
 
 export type { ForgeDriver, ForgeAvailability, ForgeItem, ForgeKind, ForgePrStatus, ForgeRefKind } from './types.ts';

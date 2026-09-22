@@ -186,6 +186,7 @@ import { isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
 import { browseDirectory, isInsideBrowseRoot, isLexicallyInsideBrowseRoot, resolveBrowseRoot } from './fs-browse.ts';
 import {
+  listForgeChecks,
   listForgeComments,
   listForgeItems,
   parseRemote,
@@ -193,7 +194,7 @@ import {
   searchForgeItems,
   type ForgeAvailability,
 } from './forge/index.ts';
-import { fetchGithubChecks, fetchGithubPrDiff, fetchGithubRefStatus, forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, GithubPrNotFoundError, GH_CHECKS_MAX, GH_SEARCH_MAX, GH_REF_STATUS_MAX } from './github.ts';
+import { fetchGithubPrDiff, fetchGithubRefStatus, forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, GithubPrNotFoundError, GH_CHECKS_MAX, GH_SEARCH_MAX, GH_REF_STATUS_MAX } from './github.ts';
 import { ensureLaunchKey } from './launch-key.ts';
 import { openInTerminal } from './open-in-terminal.ts';
 import { agentCliRunner, detectOpenTargets, openFileInDefaultApp, openInApp } from './open-in-app.ts';
@@ -5312,7 +5313,8 @@ export function createApp(deps: ServerDeps) {
         if (!Number.isInteger(n) || n <= 0 || String(n) !== part) return c.json({ error: 'invalid prs query' }, 400);
         numbers.push(n);
       }
-      return c.json(await fetchGithubChecks(repoRoot, numbers));
+      const forge = resolveForge(await getRepoInfo(repoRoot));
+      return c.json(await listForgeChecks(forge, numbers));
     })
 
     // Search across ALL states (#730). Additive sibling of `/github`, which lists the OPEN set

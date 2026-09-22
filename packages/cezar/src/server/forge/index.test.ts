@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RepoInfo } from '../git.ts';
 import {
   forgeKindOfRemote,
+  listForgeChecks,
   listForgeComments,
   listForgeItems,
   NO_FORGE_REASON,
@@ -249,5 +250,46 @@ describe('listForgeComments (the /github/comments route)', () => {
     };
     expect(await listForgeComments(driver, 'pr', 137, { refresh: true })).toBe(payload);
     expect(calls).toEqual([['pr', 137, { refresh: true }]]);
+  });
+});
+
+describe('listForgeChecks (the /github/checks route)', () => {
+  // Spec 2026-08-10-forge-provider-adapters, Step 1.6: the route goes through the driver, and a
+  // missing forge or capability degrades in the payload instead of throwing.
+  const base: ForgeDriver = {
+    kind: 'gitlab',
+    detect: async () => ({ available: true }),
+    detectCached: () => null,
+    listIssues: async () => [],
+    listPRs: async () => [],
+    createPR: async () => ({ ok: false, error: 'test' }),
+    prStatus: async () => null,
+    viewUrl: () => null,
+  };
+
+  it('answers the unavailable payload for a null forge', async () => {
+    // ForgeChecksData's unavailable branch carries only `reason` — no `checks` field to empty.
+    expect(await listForgeChecks(null, [1])).toEqual({
+      available: false,
+      reason: NO_FORGE_REASON,
+    });
+  });
+
+  it('degrades for a driver without listChecks', async () => {
+    expect(await listForgeChecks(base, [1])).toEqual({
+      available: false,
+      reason: 'CI checks are not supported for this gitlab remote',
+    });
+  });
+
+  it('delegates to listChecks with the numbers', async () => {
+    const calls: unknown[] = [];
+    const payload = { available: true, checks: { 1: 'passing' as const } };
+    const driver: ForgeDriver = {
+      ...base,
+      listChecks: async (numbers) => (calls.push(numbers), payload),
+    };
+    expect(await listForgeChecks(driver, [1, 2])).toBe(payload);
+    expect(calls).toEqual([[1, 2]]);
   });
 });

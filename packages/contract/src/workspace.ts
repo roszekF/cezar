@@ -35,6 +35,9 @@ export const workspaceConfigResponseSchema = z.object({
   effectiveSkillsAutoUpdate: z.boolean(),
   composerDefaults: z.object({
     autonomous: z.boolean().nullable(),
+    /** Sandbox new tasks by default (spec 2026-09-22-docker-sandboxes). `null` = no opinion =
+     *  off. Only ever applies where the server found `sbx`; elsewhere the toggle is absent. */
+    sandbox: z.boolean().nullable(),
     worktree: z.boolean().nullable(),
     /** `'source-dependent'` when no `CEZ_AUTONOMOUS_DEFAULT` pins it either way. */
     inheritedAutonomous: z.union([z.boolean(), z.literal('source-dependent')]),
@@ -83,6 +86,7 @@ export const setWorkspaceConfigInputSchema = z.object({
   composerDefaults: z
     .object({
       autonomous: z.boolean().nullable().optional(),
+      sandbox: z.boolean().nullable().optional(),
       worktree: z.boolean().nullable().optional(),
     })
     .optional(),
@@ -160,6 +164,8 @@ export const uiStateSchema = z.looseObject({
   lastWorktree: z.boolean().optional(),
   /** The last autonomous choice — remembered like `lastWorktree`. Absent → off. */
   lastAutonomous: z.boolean().optional(),
+  /** The last Sandbox choice (spec 2026-09-22-docker-sandboxes). Absent → off. */
+  lastSandbox: z.boolean().optional(),
   /** Whether new runs should ask agents to append follow-up work. Absent → on. */
   lastGenerateFollowups: z.boolean().optional(),
   /** Skill selection frequency (#408): name → times chosen, across BOTH composers. */

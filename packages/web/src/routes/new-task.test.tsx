@@ -160,6 +160,7 @@ const WORKSPACE_CONFIG: WorkspaceConfigResponse = {
   effectiveSkillsAutoUpdate: true,
   composerDefaults: {
     autonomous: null,
+    sandbox: null,
     worktree: null,
     inheritedAutonomous: 'source-dependent',
     inheritedWorktree: true,
@@ -469,7 +470,7 @@ describe('picker data flows', () => {
   it('drops a persisted model preset that belongs to another runner', async () => {
     writeDraft({
       text: '', source: null, runner: 'codex', agentProfile: null, model: 'claude-opus-4-8', variants: 1,
-      planFirst: false, worktree: null, autonomous: null, generateFollowups: null, dispatch: null,
+      planFirst: false, worktree: null, autonomous: null, sandbox: null, generateFollowups: null, dispatch: null,
     })
     serve({ health: HEALTH_MULTI, providerStatus: PROVIDERS_MULTI })
     renderNewTask()
@@ -980,7 +981,7 @@ describe('submit', () => {
     // lands in its errored state immediately and the test stays deterministic.
     writeDraft({
       text: '', source: { source: 'skill', ref: 'om-fix' }, runner: null, agentProfile: null, model: null,
-      variants: 1, planFirst: false, worktree: null, autonomous: null, generateFollowups: null, dispatch: null,
+      variants: 1, planFirst: false, worktree: null, autonomous: null, sandbox: null, generateFollowups: null, dispatch: null,
     })
     serve({ createRun: { id: 'run-9' }, uiStateStatus: 404 })
     renderNewTask()
@@ -2474,5 +2475,78 @@ describe('the Dispatch toggle', () => {
     fireEvent.change(textarea(), { target: { value: 'Server says no' } })
     await startTask()
     expect(postedBody()).not.toHaveProperty('dispatch')
+  })
+})
+
+// ---- Docker Sandboxes (spec 2026-09-22-docker-sandboxes) --------------------------------------
+
+describe('the Sandbox toggle', () => {
+  const HEALTH_SBX: HealthResponse = {
+    ...HEALTH,
+    capabilities: {
+      ...HEALTH.capabilities,
+      sandbox: { provider: 'docker-sbx', state: 'available', version: 'v0.45.0', backends: ['claude', 'codex'] },
+    },
+  }
+  const sandboxToggle = () => document.querySelector('[data-slot="sandbox-toggle"]') as HTMLButtonElement | null
+
+  it('is absent when the server found no sbx, and nothing is sent', async () => {
+    serve({ createRun: { id: 'run-1' } })
+    renderNewTask()
+    await pillReady()
+    expect(sandboxToggle()).toBeNull()
+    fireEvent.change(textarea(), { target: { value: 'plain task' } })
+    await startTask()
+    expect(postedBody()).not.toHaveProperty('sandbox')
+  })
+
+  it('is off by default, and sends sandbox: true once checked', async () => {
+    serve({ health: HEALTH_SBX, createRun: { id: 'run-2' } })
+    renderNewTask()
+    await pillReady()
+    await waitFor(() => expect(sandboxToggle()).not.toBeNull())
+    expect(sandboxToggle()?.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(sandboxToggle() as HTMLButtonElement)
+    expect(sandboxToggle()?.getAttribute('aria-checked')).toBe('true')
+    fireEvent.change(textarea(), { target: { value: 'sandboxed task' } })
+    await startTask()
+    expect(postedBody()).toMatchObject({ sandbox: true })
+  })
+
+  it('moves with the Worktree toggle: on turns Worktree on, Worktree off turns it off', async () => {
+    serve({ health: HEALTH_SBX })
+    renderNewTask()
+    await pillReady()
+    const worktree = () => document.querySelector('[data-slot="worktree-toggle"]') as HTMLButtonElement
+    await waitFor(() => expect(sandboxToggle()).not.toBeNull())
+
+    // Worktree off, then Sandbox on: the sandbox mounts a worktree, so it brings one back.
+    fireEvent.click(worktree())
+    expect(worktree().getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(sandboxToggle() as HTMLButtonElement)
+    await waitFor(() => expect(worktree().getAttribute('aria-checked')).toBe('true'))
+    expect(sandboxToggle()?.getAttribute('aria-checked')).toBe('true')
+
+    // …and turning the worktree off again turns the sandbox off rather than greying it out.
+    fireEvent.click(worktree())
+    await waitFor(() => expect(sandboxToggle()?.getAttribute('aria-checked')).toBe('false'))
+    expect(sandboxToggle()?.disabled).toBe(false)
+  })
+
+  it('follows the workspace default when the user has not chosen', async () => {
+    serve({
+      health: HEALTH_SBX,
+      createRun: { id: 'run-3' },
+      workspaceConfig: {
+        ...WORKSPACE_CONFIG,
+        composerDefaults: { ...WORKSPACE_CONFIG.composerDefaults, sandbox: true },
+      },
+    })
+    renderNewTask()
+    await pillReady()
+    await waitFor(() => expect(sandboxToggle()?.getAttribute('aria-checked')).toBe('true'))
+    fireEvent.change(textarea(), { target: { value: 'default sandboxed' } })
+    await startTask()
+    expect(postedBody()).toMatchObject({ sandbox: true })
   })
 })

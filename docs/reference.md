@@ -295,6 +295,8 @@ Useful environment variables:
 | `CEZ_CODEX_BIN=/path/to/codex` | Override which `codex` binary is used. |
 | `CEZ_OPENCODE_BIN=/path/to/opencode` | Override which `opencode` binary is used. |
 | `CEZ_PI_BIN=/path/to/pi` | Override which `pi` binary is used. |
+| `CEZ_SBX_BIN=/path/to/sbx` | Override which Docker Sandboxes `sbx` binary is used. |
+| `CEZ_SANDBOX=0` | Turn off [sandboxed runs](#sandboxed-runs-docker-sandboxes): the composer shows no **Sandbox** toggle and `POST /runs` refuses `sandbox: true`, even when `sbx` is installed. Otherwise cezar checks for `sbx` once at start — passively (`sbx version`, which never starts its daemon) — and `/health` reports `capabilities.sandbox`. Only the exact value `0` opts out. |
 | `CLAUDE_CONFIG_DIR`, `CODEX_HOME` | The agents' **own** variables, honoured where the vendor documents one. Setting one moves that agent's **default account** — the config folder cezar discovers. A *second* login of the same CLI is deliberately not an environment setting, since one process-wide value cannot differ per project: add it under **Settings → Agent accounts** and pick it per project. |
 | `CEZ_BROWSE_ROOT=~/` | Default root for **Add project → Open local folder…**. The picker cannot navigate above it; a saved workspace value overrides the environment default and must name an existing folder. |
 | `CEZ_PROJECTS_DIR=~/cezar/projects` | Default destination for **Clone from GitHub**. Saved workspace settings override it, and missing directories are created recursively. |
@@ -316,6 +318,97 @@ Useful environment variables:
 | `CEZ_REVIEW_GATE=1` | Turn ON the optional diff-first review gate (#489): a successful, non-autonomous run with changes parks at `review` (Accept / Send back / Draft PR) instead of finishing. Off by default — changed runs settle to `done` with the diff left in the worktree. Only `1` enables. The Settings → Agents toggle overrides this; autonomous runs always skip it. |
 | `CEZ_NO_BANNER=1` | Skip the `open-mercato/skills` banner on `cezar serve` startup. (The cockpit no longer shows a banner — its skills now live on the Skills page's Manage panel — so this env var is the terminal banner's only switch.) |
 | `VITE_CEZ_API_BASE=http://localhost:4321` | **Build time only**, and only when the cockpit bundle is deployed apart from the service it talks to. Empty (the default) means "the origin that served this page", which is right for both normal cases: the CLI serves the bundle itself, and `npm run dev` proxies `/api` to the local service. A deployment that must be configured without a rebuild can put `<meta name="cez-api-base" content="…">` in the served HTML instead, which wins over this. |
+
+### Sandboxed runs (Docker Sandboxes)
+
+By default a task's agent is a plain process on your machine, with your permissions: its
+worktree keeps it apart from other tasks, not from your home directory, keys or other projects.
+When [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) (`sbx`, 0.45 or newer) is
+installed, the composer shows a **Sandbox** toggle. A sandboxed task gets its own microVM,
+created at its first step, and **both its agent and its workflow check steps** run inside it.
+
+**How the isolation works.** The sandbox is created with `sbx create --clone`: the agent works
+on a **private clone** of your repository inside the VM, and your repository is mounted
+**read-only**. Nothing the agent does can write anything on your machine — there is no writable
+`.git`, so no gitlink, `commondir`, `.git/modules` config or hook path it could point at a
+script your own `git status` would then execute on the host. Besides the clone, the VM sees only
+the task's own directory outside the repo (`~/.cezar/sandbox/<task id>/` — its handoff journal,
+temp directory and pasted images). Your host environment does not cross: only the task's own
+variables do. It *can read* your repository, including files you keep there but never commit —
+it is read-only, and no worse than today's default, where the agent runs on your machine with
+your permissions and can read anything.
+
+**How the work comes back.** The agent commits in its clone; sbx publishes that clone over a
+loopback git daemon, and cezar fetches from it and fast-forwards the task branch in the task's
+worktree on your machine. So the review gate is unchanged — you review a normal branch in a
+normal worktree — while the host's git never runs inside the VM and the VM's git never runs on
+the host. Because the host cannot see the VM's working tree, autosave commits *inside* the VM
+first and then syncs; anything the agent leaves uncommitted stays in the VM until it does.
+`npm run test:real-sbx -w @open-mercato/cezar` checks all of this against a real sandbox.
+
+Turning **Sandbox** on turns **Worktree** on, and turning Worktree off turns Sandbox off: a
+sandboxed task's commits land in its worktree for review, so the two move together rather than
+one greying the other out. **Settings → Resources → Sandbox by default** starts every new task
+sandboxed where `sbx` is installed; a per-task choice still wins, and **Plan first** works too —
+the planning call itself runs on the host (it has no worktree, no shell and no write tools), and
+the planned run it produces is the part that goes into the VM.
+
+**One-time setup:**
+
+```bash
+sbx login                          # Docker account (free)
+sbx policy init balanced           # network: AI APIs, package managers, code hosts allowed
+sbx run claude                     # in any folder: type /login, then exit — once for all sandboxes
+sbx secret set openai --oauth      # for Codex tasks
+```
+
+Logins stay on your machine: sandboxes only ever hold a stand-in token that the sbx proxy swaps
+on the way out. **Don't** `sbx secret set github` for cezar: it would let the agent push to (or
+merge) any of your repositories from inside the VM, around cezar's review gate. cezar pushes
+the task branch from the host anyway.
+
+**Editing what a sandbox may reach.** These are `sbx`'s own settings, not cezar's — cezar
+mounts and launches, it does not re-wrap another tool's policy:
+
+```bash
+sbx policy ls                                     # every rule in force
+sbx policy allow network "api.example.com,*.npmjs.org"
+sbx policy deny  network "*.evil.example"         # deny beats allow
+sbx policy allow network "localhost" --sandbox cez-<task id>   # one sandbox only
+sbx policy log                                    # what got blocked, and why
+sbx policy init balanced                          # or allow-all / deny-all, non-interactively
+```
+
+**File access is not a policy** — locally, `sbx`'s filesystem rules are fixed
+(`sbx policy inspect local-policy` shows them as not editable from the CLI). What a sandboxed
+task can reach is exactly the mount list above, which cezar decides: its own clone of the repo,
+your repo read-only as that clone's source, and the task's own directory outside the repository.
+There is no per-task way to add another path
+yet; if you need one (a shared cache, a fixture directory), say so and it becomes a setting.
+Per-sandbox network rules are awkward for the same reason — each task gets a new sandbox name —
+so the global policy is the practical knob today.
+
+**Lifecycle.** The VM is stopped when the task settles (its state is kept for **Continue**) and
+removed when the task is deleted, loses a variant pick, or its worktree is removed or reclaimed.
+A Continue after that creates a fresh VM and a fresh agent session told to pick up from the
+handoff journal. At startup cezar stops VMs a crash left running and removes ones whose task is
+gone — only its own `cez-<task id>` VMs for this repo. **Open in CLI** resumes the session inside
+the VM (`sbx exec -it cez-<id> claude --resume …`).
+
+**Limits (v1):** Claude and Codex only, one agent per task (no mixed-agent workflows, and a
+Continue must stay on the agent the sandbox was created for); a worktree is always used; cezar
+itself must be running in the repository's main checkout, since `sbx --clone` cannot clone from
+a linked worktree; no agent-account override (a sandbox has its own login); no dispatch,
+`cez automation` or follow-up inbox (the VM can't reach the cockpit). Work the agent has not
+committed lives only in the VM until the next autosave syncs it back.
+Check steps see only the task's variables — list anything else they need in
+`CEZ_ENV_PASSTHROUGH=A,B` (visible to the agent too). The memory column measures only the
+local `sbx` client; the VM is capped with your workspace memory limit instead. Dependencies
+built in the VM are Linux builds, so on a macOS host they won't load outside it.
+
+Running **the whole cockpit** inside one sandbox also works, without this feature: start `sbx
+run claude --name cezar --publish 4321:4321 <repo>`, then `sbx exec -it cezar bash` and
+`npx cezar-cli --bind-host 0.0.0.0` inside — every task then shares that one VM.
 
 ### Troubleshooting: the agent's shell returns nothing
 

@@ -128,6 +128,7 @@ const composerDefaultsSchema = z
   .object({
     autonomous: z.boolean().optional().catch(undefined),
     worktree: z.boolean().optional().catch(undefined),
+    sandbox: z.boolean().optional().catch(undefined),
   })
   .passthrough();
 

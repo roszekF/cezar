@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
+  BoxIcon,
   CheckIcon,
   ChevronDownIcon,
   FolderOpenIcon,
@@ -75,6 +76,7 @@ import {
   composerRunModeNote,
   readDraft,
   resolveComposerRunMode,
+  resolveSandboxToggle,
   writeDraft,
   type NewTaskDraft,
 } from './new-task-draft'
@@ -322,6 +324,26 @@ export function NewTaskRoute() {
   const worktreeOn = runMode.worktree
   const autonomousOn = runMode.autonomous
 
+  // Sandbox (spec 2026-09-22-docker-sandboxes): offered only when the server found `sbx`. Off by
+  // default; an explicit toggle this session wins, then the remembered last choice. A toggle
+  // the server would refuse is disabled with the reason instead — never silently dropped.
+  const sandboxToggle = resolveSandboxToggle({
+    capability: health.data?.capabilities.sandbox,
+    hasGit,
+    runner: displayRunner,
+    agentProfile,
+    dispatchOn,
+  })
+  const sandboxDisabledReason = sandboxToggle.disabledReason
+  // A sandbox mounts the worktree, so the two toggles move together: `setSandbox(true)` turns
+  // Worktree on, and turning Worktree off turns Sandbox off. `worktreeOn` therefore has the last
+  // word here — a draft that remembers Sandbox on cannot outlive the worktree it needs.
+  const sandboxOn =
+    sandboxToggle.shown
+    && sandboxDisabledReason === undefined
+    && worktreeOn
+    && (draft.sandbox ?? uiState.data?.lastSandbox ?? workspaceConfig.data?.composerDefaults?.sandbox ?? false)
+
   // Follow-up generation (#444) is offered only while the server has the global inbox on
   // (#471, `CEZ_FOLLOWUPS=1`) — there is no inbox for the follow-ups to land in otherwise, and
   // the server pins the flag to false regardless, so a toggle would be a lie. Hidden, the value
@@ -474,6 +496,7 @@ export function NewTaskRoute() {
         images,
         worktree: worktreeOn,
         autonomous: autonomousOn,
+        sandbox: sandboxOn,
         generateFollowups: generateFollowupsOn,
         // #374: when the Inbox's "Run" sent us here, hand the entry's id back so the server
         // records this run on it and it leaves the inbox — the audit trail the old
@@ -495,6 +518,8 @@ export function NewTaskRoute() {
       // filling the list with the default would push real choices out of it.
       ...(source ? { recentSources: pushRecentSource(recentSources, source) } : {}),
       ...(followupsToggleShown ? { lastGenerateFollowups: generateFollowupsOn } : {}),
+      // Remembered only when the choice was actually open to the user.
+      ...(sandboxToggle.shown && sandboxDisabledReason === undefined ? { lastSandbox: sandboxOn } : {}),
       // Frequency sort (#408): only a SKILL pick counts — the map is keyed by skill name, and a
       // workflow choice here doesn't select one directly. Gated on the CURRENT map being known:
       // the PUT merge is shallow, so bumping off an errored ui-state query (`sourcesReady` only
@@ -528,6 +553,7 @@ export function NewTaskRoute() {
           defaultRunner,
           variants,
           images: plan.images,
+          sandbox: sandboxOn,
           generateFollowups: generateFollowupsOn,
           todoId: deepLink.todo, // #374: planning first must not lose the inbox entry
           dispatch,
@@ -708,7 +734,7 @@ export function NewTaskRoute() {
                       ? "Dispatch forks this task's commits — subtasks need a worktree"
                       : 'Parallel variants always use isolated worktrees'
                   }
-                  onChange={(on) => update({ worktree: on })}
+                  onChange={(on) => update({ worktree: on, ...(on ? {} : { sandbox: false }) })}
                 />
               ) : null}
               <AutonomousToggle
@@ -716,6 +742,13 @@ export function NewTaskRoute() {
                 disabled={draft.planFirst}
                 onChange={(on) => update({ autonomous: on })}
               />
+              {sandboxToggle.shown ? (
+                <SandboxToggle
+                  on={sandboxOn}
+                  disabledReason={sandboxDisabledReason}
+                  onChange={(on) => update({ sandbox: on, ...(on ? { worktree: true } : {}) })}
+                />
+              ) : null}
               {followupsToggleShown ? (
                 <GenerateFollowupsToggle
                   on={generateFollowupsOn}
@@ -895,6 +928,46 @@ function AutonomousToggle({
         <SquareIcon aria-hidden="true" className="size-3 shrink-0 text-soft-foreground" />
       )}
       Autonomous
+    </button>
+  )
+}
+
+/** Sandbox toggle (spec 2026-09-22-docker-sandboxes): checked = the task's agent and checks run
+ *  inside its own Docker Sandbox microVM, which sees only the task worktree. */
+function SandboxToggle({
+  on,
+  disabledReason,
+  onChange,
+}: {
+  on: boolean
+  disabledReason?: string
+  onChange: (on: boolean) => void
+}) {
+  const disabled = disabledReason !== undefined
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={on}
+      disabled={disabled}
+      data-slot="sandbox-toggle"
+      onClick={() => onChange(!on)}
+      title={
+        disabled
+          ? disabledReason
+          : on
+            ? 'Sandboxed — the agent and checks run in a Docker Sandbox that sees only this task’s worktree'
+            : 'Runs on this machine — check to run the agent and checks in a Docker Sandbox (turns Worktree on)'
+      }
+      className={cn(chipClass, on && !disabled && 'border-primary/60 text-foreground')}
+    >
+      {on ? (
+        <CheckIcon aria-hidden="true" className="size-3 shrink-0 text-primary" />
+      ) : (
+        <SquareIcon aria-hidden="true" className="size-3 shrink-0 text-soft-foreground" />
+      )}
+      <BoxIcon aria-hidden="true" className="size-3 shrink-0" />
+      Sandbox
     </button>
   )
 }

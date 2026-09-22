@@ -5,6 +5,7 @@
 // recoverable) and the thin I/O enforcer that performs the reclaim. The selector
 // is pure and unit-testable; the enforcer never throws (helper discipline).
 import { existsSync } from 'node:fs';
+import { disposeRunSandbox } from '../core/sandbox/run-sandbox.ts';
 import { createWorktree, removeWorktree } from '../git-worktree.ts';
 import type { RunRecord, RunStatus } from './store.ts';
 
@@ -46,7 +47,7 @@ export function selectReclaimableWorktrees(runs: readonly RunRecord[], keep: num
  *  enforcer stays easy to test and never imports the concrete store. */
 export interface RetentionStore {
   listRuns(): RunRecord[];
-  updateRun(id: string, patch: { worktreeReclaimedAt?: string }): unknown;
+  updateRun(id: string, patch: { worktreeReclaimedAt?: string; sandbox?: RunRecord['sandbox'] }): unknown;
 }
 
 /** The slice of the store the re-materializer needs. */
@@ -100,6 +101,8 @@ export interface ReclaimOptions {
    *  Injectable so tests can exercise the "removal failed" branch without brittle
    *  filesystem-permission tricks. */
   remove?: (repoRoot: string, worktreePath: string) => Promise<void>;
+  /** Sandbox remover for a sandboxed run's reclaimed worktree — injectable for tests. */
+  removeSandbox?: (run: RunRecord) => Promise<unknown>;
 }
 
 export async function reclaimWorktrees(
@@ -120,6 +123,12 @@ export async function reclaimWorktrees(
       await remove(repoRoot, run.worktreePath);
       if (existsSync(run.worktreePath)) continue; // reclaim failed; retry next pass
       store.updateRun(id, { worktreeReclaimedAt: now() });
+      // The sandbox mounted this worktree; it goes with it (spec 2026-09-22-docker-sandboxes, Q2).
+      // A later Continue rematerializes the worktree and creates a fresh sandbox.
+      if (run.sandbox && !run.sandbox.removedAt) {
+        await (opts.removeSandbox ?? ((r) => disposeRunSandbox(r, repoRoot)))(run);
+        store.updateRun(id, { sandbox: { ...run.sandbox, removedAt: now() } });
+      }
       reclaimed.push(id);
     } catch {
       // best-effort: never let retention crash a terminal transition or startup.

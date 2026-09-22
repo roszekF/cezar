@@ -141,7 +141,7 @@ class CodexSession implements AgentSession {
     private readonly opts: SessionOptions,
   ) {
     try {
-      this.child = spawnCodexAppServer(bin, spec.cwd, spec.env);
+      this.child = spawnCodexAppServer(bin, spec.cwd, spec.env, spec.launcher);
       this.rpc = new CodexAppServerRpc(this.child);
     } catch (err) {
       throw codexSpawnError(err, bin);
@@ -347,7 +347,12 @@ class CodexSession implements AgentSession {
       // Full access is the `auto` preset shared by all backends. Besides avoiding prompts, this
       // keeps container installs working when bubblewrap cannot create a UID map (#563).
       // CEZ_CODEX_NETWORK=0 remains the backwards-compatible explicit sandbox opt-out.
-      sandbox: process.env.CEZ_CODEX_NETWORK === '0' ? 'workspace-write' : 'danger-full-access',
+      // Inside a Docker Sandbox the VM is the boundary: always full access, never a nested
+      // bubblewrap that would only reproduce #563 (spec 2026-09-22-docker-sandboxes).
+      sandbox:
+        this.spec.launcher?.kind !== 'sandbox' && process.env.CEZ_CODEX_NETWORK === '0'
+          ? 'workspace-write'
+          : 'danger-full-access',
       approvalPolicy: 'never',
     };
     if (this.spec.resume && this.spec.sessionId) {

@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync
 import { join } from 'node:path';
 import { z } from 'zod';
 import { collectSecretValues, redactDeep, redactSecrets } from '../core/secret-redaction.ts';
+import { cezarHomeDir } from '../paths.ts';
 // Sibling module, files only — a draft belongs to a run and is deleted with it (#939).
 import { deleteRunDrafts } from './drafts.ts';
 // Pure, dependency-free reference helpers — the same sanity bound the marker parser applies.
@@ -176,6 +177,18 @@ export const runRecordSchema = z.object({
    *  group-pick winner-park read it). Additive-safe: absent = falsy = not
    *  autonomous. Set at creation from `WorkflowInput.autonomous`. */
   autonomous: z.boolean().optional(),
+  /** Docker Sandbox the run executes in (spec 2026-09-22-docker-sandboxes). Absent = host. */
+  sandbox: z
+    .object({
+      provider: z.literal('docker-sbx'),
+      name: z.string(),
+      /** The agent kit the sandbox was created with — one per sandbox, so a step on another
+       *  backend is refused rather than failing as "command not found" inside the VM. */
+      agent: z.enum(['claude', 'codex']).optional(),
+      createdAt: z.string().optional(),
+      removedAt: z.string().optional(),
+    })
+    .optional(),
   /** Optional provenance for tasks launched by a project GitHub automation. */
   automation: z
     .object({
@@ -1345,6 +1358,7 @@ export class RunStore extends EventEmitter {
         rmSync(this.eventsPath(id), { force: true });
         rmSync(this.handoffPath(id), { force: true }); // spec 007: the journal goes with the task
         rmSync(this.imagesDir(id), { recursive: true, force: true }); // agent screenshots
+        rmSync(this.sandboxDir(id), { recursive: true, force: true }); // a sandboxed run's journal dir
         // Unsent drafts go with the task (#939): a draft for a run that no longer exists is
         // unreachable by definition, and it may be holding megabytes of pasted screenshots.
         deleteRunDrafts(this.dataDir, id);
@@ -1397,7 +1411,16 @@ export class RunStore extends EventEmitter {
   /** Same location `handoffPath()` in handoff.ts produces — inlined to keep
    *  the store free of upward imports. */
   private handoffPath(runId: string): string {
+    const scoped = this.sandboxDir(runId);
+    if (existsSync(scoped)) return join(scoped, 'handoff.md');
     return join(this.dataDir, 'runs', `${runId}.handoff.md`);
+  }
+
+  /** A sandboxed run's own directory — `sandboxRunDir()` in handoff.ts, inlined likewise. It sits
+   *  under the cezar home, NOT under `dataDir`: a `--clone` sandbox cannot mount anything inside
+   *  the cloned repo without destroying the clone overlay (spec 2026-09-22-docker-sandboxes). */
+  private sandboxDir(runId: string): string {
+    return join(cezarHomeDir(), 'sandbox', runId);
   }
 
   /** Agent screenshots persisted by the run manager (see persistImage). */
@@ -1422,6 +1445,7 @@ export class RunStore extends EventEmitter {
         rmSync(this.eventsPath(stale.id), { force: true });
         rmSync(this.handoffPath(stale.id), { force: true });
         rmSync(this.imagesDir(stale.id), { recursive: true, force: true });
+        rmSync(this.sandboxDir(stale.id), { recursive: true, force: true });
         deleteRunDrafts(this.dataDir, stale.id);
       } catch {
         // best effort

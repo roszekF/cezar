@@ -166,6 +166,21 @@ export const runRecordSchema = z.object({
   /** Autonomous mode (#autonomous): the run never parks at `waiting` or the terminal `review`
    *  gate. Absent = falsy = not autonomous. */
   autonomous: z.boolean().optional(),
+  /** The run's Docker Sandbox (spec 2026-09-22-docker-sandboxes). Absent on every ordinary run. */
+  sandbox: z
+    .object({
+      provider: z.literal('docker-sbx'),
+      /** `cez-<runId>` — the `sbx` sandbox name. */
+      name: z.string(),
+      /** The agent kit the sandbox was created with — one per sandbox, so a step on another
+       *  backend is refused rather than failing as "command not found" inside the VM. */
+      agent: z.enum(['claude', 'codex']).optional(),
+      /** Set once `sbx create` first succeeded. */
+      createdAt: z.string().optional(),
+      /** Set once the sandbox was removed (run deleted, variant lost, worktree reclaimed). */
+      removedAt: z.string().optional(),
+    })
+    .optional(),
   /**
    * Provenance for a task a project GitHub automation launched (#694). Absent on every ordinary
    * run, which is what makes it additive — the cockpit shows the "from automation" link only when
@@ -887,6 +902,10 @@ export const createRunInputBaseSchema = z
     worktree: z.boolean().optional(),
     /** true → autonomous run: never parks at "waiting"; auto-continues until done. */
     autonomous: z.boolean().optional(),
+    /** true → run the task's agent and check steps inside its own Docker Sandbox microVM
+     *  (spec 2026-09-22-docker-sandboxes). Refused with a 400 unless `capabilities.sandbox` is
+     *  `available` and the run qualifies (worktree, Claude or Codex only, no dispatch). */
+    sandbox: z.boolean().optional(),
     /** false → keep the handoff journal but do not expose or request a follow-up todos file.
      *  Omit for the default (enabled); a server with the capability off pins it to false. */
     generateFollowups: z.boolean().optional(),

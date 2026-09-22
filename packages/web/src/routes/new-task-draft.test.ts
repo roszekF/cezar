@@ -7,6 +7,7 @@ import {
   readDraft,
   resetDraft,
   resolveComposerRunMode,
+  resolveSandboxToggle,
   writeDraft,
 } from './new-task-draft'
 
@@ -104,6 +105,7 @@ describe('the new-task draft store', () => {
       planFirst: false,
       worktree: null,
       autonomous: null,
+      sandbox: null,
       generateFollowups: null,
       dispatch: null,
     })
@@ -120,6 +122,7 @@ describe('the new-task draft store', () => {
       planFirst: false,
       worktree: false,
       autonomous: null,
+      sandbox: null,
       generateFollowups: false,
       dispatch: null,
     })
@@ -142,6 +145,7 @@ describe('the new-task draft store', () => {
       planFirst: true,
       worktree: null,
       autonomous: null,
+      sandbox: null,
       generateFollowups: true,
       dispatch: null,
     })
@@ -158,6 +162,7 @@ describe('the new-task draft store', () => {
       planFirst: true,
       worktree: null,
       autonomous: null,
+      sandbox: null,
       generateFollowups: true,
       dispatch: null,
     })
@@ -174,6 +179,7 @@ describe('the new-task draft store', () => {
       planFirst: true,
       worktree: false,
       autonomous: null,
+      sandbox: null,
       generateFollowups: false,
       dispatch: null,
     })
@@ -185,6 +191,7 @@ describe('the new-task draft store', () => {
       variants: 2,
       worktree: false,
       autonomous: null,
+      sandbox: null,
       generateFollowups: false,
       dispatch: null,
       planFirst: true,
@@ -205,6 +212,7 @@ describe('the new-task draft store', () => {
       planFirst: false,
       worktree: null,
       autonomous: null,
+      sandbox: null,
       generateFollowups: null,
       dispatch: null,
     })
@@ -221,6 +229,7 @@ describe('the new-task draft store', () => {
       planFirst: false,
       worktree: null,
       autonomous: null,
+      sandbox: null,
       generateFollowups: null,
       dispatch: null,
     })
@@ -306,5 +315,28 @@ describe('composerRunModeNote (#793)', () => {
     for (const hasGit of [true, false]) {
       expect(composerRunModeNote({ worktree: false, hasGit })).not.toContain('isolated worktree')
     }
+  })
+})
+
+describe('resolveSandboxToggle (spec 2026-09-22-docker-sandboxes)', () => {
+  const capability = { state: 'available', version: 'v0.45.0', backends: ['claude', 'codex'] }
+  const base = { capability, hasGit: true, runner: 'claude', agentProfile: null, dispatchOn: false }
+
+  it('is hidden without the capability and enabled for a qualifying run', () => {
+    expect(resolveSandboxToggle({ ...base, capability: undefined })).toEqual({ shown: false })
+    expect(resolveSandboxToggle(base)).toEqual({ shown: true })
+    expect(resolveSandboxToggle({ ...base, runner: 'codex' })).toEqual({ shown: true })
+  })
+
+  it.each([
+    [{ capability: { ...capability, state: 'unsupported-version' } }, /not supported/],
+    [{ hasGit: false }, /git repository/],
+    [{ runner: 'opencode' }, /Claude and Codex only/],
+    [{ agentProfile: 'work' }, /sandbox login/],
+    [{ dispatchOn: true }, /cannot dispatch/],
+  ])('disables with a reason: %o', (patch, reason) => {
+    const state = resolveSandboxToggle({ ...base, ...patch })
+    expect(state.shown).toBe(true)
+    expect(state.disabledReason).toMatch(reason)
   })
 })

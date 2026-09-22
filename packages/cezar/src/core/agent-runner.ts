@@ -13,6 +13,7 @@
  *                 model with `provider/model`.
  */
 
+import type { ProcessLauncher } from './process-launcher.ts';
 import type { UiEvent } from './ui-events.ts';
 
 /**
@@ -68,6 +69,12 @@ export interface AgentRunSpec {
    * picks up the on-disk conversation (used by "Continue" after a run ends).
    */
   resume?: boolean;
+  /**
+   * How the agent process is started (spec 2026-09-22-docker-sandboxes).
+   * Internal — never part of a contract. Omitted → `hostLauncher`, a plain
+   * child process on the host.
+   */
+  launcher?: ProcessLauncher;
 }
 
 /**

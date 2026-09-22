@@ -99,11 +99,14 @@ export function buildPlannedRunBody(opts: {
   defaultRunner?: Runner
   variants: number
   images: readonly AttachmentInput[]
+  /** true → the planned run executes in its own Docker Sandbox. The PLANNING call itself always
+   *  runs on the host: it has no worktree to mount, no shell and no write tools. */
+  sandbox?: boolean
   generateFollowups?: boolean
   todoId?: string
   dispatch?: DispatchIntent | null
 }): CreateRunInput {
-  const { task, steps, model, modelsLocked, runner, runnerExplicit, defaultRunner, variants, images, generateFollowups, todoId, dispatch } =
+  const { task, steps, model, modelsLocked, runner, runnerExplicit, defaultRunner, variants, images, sandbox, generateFollowups, todoId, dispatch } =
     opts
   return {
     task,
@@ -112,6 +115,7 @@ export function buildPlannedRunBody(opts: {
     runner: runnerOverride(runner, defaultRunner, runnerExplicit),
     variants: variants > 1 ? variants : undefined,
     images: images.length > 0 ? [...images] : undefined,
+    sandbox: sandbox === true ? true : undefined,
     generateFollowups: generateFollowups === false ? false : undefined,
     todoId: todoId || undefined,
     dispatch: dispatch ?? undefined,

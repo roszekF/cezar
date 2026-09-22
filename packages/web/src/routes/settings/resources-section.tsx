@@ -116,11 +116,12 @@ function ResourcesForm({ config }: { config: WorkspaceConfigResponse }) {
   const composerDefaults = config.composerDefaults ?? {
     autonomous: null,
     worktree: null,
+    sandbox: null,
     inheritedAutonomous: 'source-dependent' as const,
     inheritedWorktree: true,
   }
   const saveComposerDefault = (
-    key: 'autonomous' | 'worktree',
+    key: 'autonomous' | 'worktree' | 'sandbox',
     value: string,
   ) => save.mutate({
     composerDefaults: { [key]: value === 'inherit' ? null : value === 'on' },
@@ -324,6 +325,24 @@ function ResourcesForm({ config }: { config: WorkspaceConfigResponse }) {
             </select>
             <span className="text-[11px] text-soft-foreground">
               Inherited: {composerDefaults.inheritedWorktree ? 'On' : 'Off'}
+            </span>
+          </label>
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">Sandbox by default</span>
+            <select
+              aria-label="Sandbox by default"
+              data-slot="composer-default-sandbox"
+              value={composerDefaults.sandbox === null ? 'inherit' : composerDefaults.sandbox ? 'on' : 'off'}
+              disabled={save.isPending}
+              onChange={(event) => saveComposerDefault('sandbox', event.target.value)}
+              className="rounded-md border border-input bg-card px-3 py-1.5 shadow-xs outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            >
+              <option value="inherit">No default</option>
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
+            <span className="text-[11px] text-soft-foreground">
+              Only where Docker Sandboxes is installed; a sandboxed task always uses a worktree.
             </span>
           </label>
         </div>

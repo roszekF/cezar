@@ -1579,3 +1579,23 @@ describe('dispatch lines', () => {
     expect(document.querySelector('[data-slot="unit-role"]')).toBeNull()
   })
 })
+
+describe('sandboxed badge (spec 2026-09-22-docker-sandboxes)', () => {
+  const badge = () => document.querySelector('[data-slot="sandbox-badge"]')
+
+  it('shows while the run holds a sandbox, naming it', () => {
+    stubFetch()
+    renderHeader(run('running', { sandbox: { provider: 'docker-sbx', name: 'cez-abc' } }))
+    expect(badge()?.textContent).toBe('sandboxed')
+    expect(badge()?.getAttribute('title')).toContain('cez-abc')
+  })
+
+  it('is absent for a host run and once the sandbox was removed', () => {
+    stubFetch()
+    const { unmount } = renderHeader(run('done'))
+    expect(badge()).toBeNull()
+    unmount()
+    renderHeader(run('done', { sandbox: { provider: 'docker-sbx', name: 'cez-abc', removedAt: '2026-09-22T00:00:00Z' } }))
+    expect(badge()).toBeNull()
+  })
+})

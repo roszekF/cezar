@@ -319,6 +319,8 @@ export function buildCreateRunBody(opts: {
   worktree?: boolean
   /** true → autonomous run (never pauses for the user). Sent only when on. */
   autonomous?: boolean
+  /** true → run in a Docker Sandbox (spec 2026-09-22-docker-sandboxes). Sent only when on. */
+  sandbox?: boolean
   /** false → do not ask the agent for follow-up todos. Sent only when off. */
   generateFollowups?: boolean
   /** The inbox entry this composer was prefilled from (`/new?…&todo=`, #374) — sent back so
@@ -345,6 +347,7 @@ export function buildCreateRunBody(opts: {
     images,
     worktree,
     autonomous,
+    sandbox,
     generateFollowups,
     todoId,
     dispatch,
@@ -364,6 +367,7 @@ export function buildCreateRunBody(opts: {
     // Off only matters for a single run — variants always isolate.
     worktree: worktree === false && variants <= 1 ? false : undefined,
     autonomous: autonomous === true ? true : undefined,
+    sandbox: sandbox === true ? true : undefined,
     generateFollowups: generateFollowups === false ? false : undefined,
     todoId: todoId || undefined,
     dispatch: dispatch ?? undefined,

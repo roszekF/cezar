@@ -96,6 +96,7 @@ describe('the workspace settings API (step 2.7)', () => {
       composerDefaults: {
         autonomous: null,
         worktree: null,
+        sandbox: null,
         inheritedAutonomous: 'source-dependent',
         inheritedWorktree: true,
       },
@@ -145,6 +146,7 @@ describe('the workspace settings API (step 2.7)', () => {
       composerDefaults: {
         autonomous: null,
         worktree: null,
+        sandbox: null,
         inheritedAutonomous: 'source-dependent',
         inheritedWorktree: true,
       },
@@ -225,6 +227,7 @@ describe('the workspace settings API (step 2.7)', () => {
     expect(inherited.composerDefaults).toEqual({
       autonomous: null,
       worktree: null,
+      sandbox: null,
       inheritedAutonomous: true,
       inheritedWorktree: false,
     });
@@ -236,6 +239,14 @@ describe('the workspace settings API (step 2.7)', () => {
     expect(rawConfig().composerDefaults).toMatchObject({ autonomous: false, worktree: true });
 
     await putConfig({ composerDefaults: { worktree: null } });
+    expect(rawConfig().composerDefaults).toEqual({ autonomous: false });
+
+    // Sandbox default (spec 2026-09-22-docker-sandboxes) stores and clears on its own, like the
+    // two above — and clearing it leaves the others untouched.
+    const sandboxed = (await (await putConfig({ composerDefaults: { sandbox: true } })).json()) as WorkspaceConfigResponse;
+    expect(sandboxed.composerDefaults).toMatchObject({ autonomous: false, sandbox: true });
+    expect(rawConfig().composerDefaults).toEqual({ autonomous: false, sandbox: true });
+    await putConfig({ composerDefaults: { sandbox: null } });
     expect(rawConfig().composerDefaults).toEqual({ autonomous: false });
   });
 

@@ -49,6 +49,9 @@ import {
 } from '@open-mercato/cezar-contract';
 import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
+import { detectSandboxCached, isCezarSandboxName } from '../core/sandbox/docker-sbx.ts';
+import { disposeRunSandbox } from '../core/sandbox/run-sandbox.ts';
+import { sandboxRunRefusal } from '../core/sandbox/run-policy.ts';
 import { RUNNER_IDS } from '../core/agent-runner.ts';
 import type { ContentBlock } from '../core/agent-runner.ts';
 import { AGENT_MODELS_LOCKED_ERROR, agentModelsLocked } from '../core/agent-model-policy.ts';
@@ -536,6 +539,8 @@ export interface WorkspaceConfigResponse {
   composerDefaults: {
     autonomous: boolean | null;
     worktree: boolean | null;
+    /** Sandbox new tasks by default (spec 2026-09-22-docker-sandboxes). */
+    sandbox: boolean | null;
     inheritedAutonomous: boolean | 'source-dependent';
     inheritedWorktree: boolean;
   };
@@ -631,6 +636,8 @@ const startRunSchema = z
     // Autonomous mode (#autonomous): the run never parks at `waiting` — it
     // auto-continues until the agent signals done. No "needs you" is raised.
     autonomous: z.boolean().optional(),
+    // Docker Sandbox (spec 2026-09-22-docker-sandboxes): run the task inside its own microVM.
+    sandbox: z.boolean().optional(),
     // Generate follow-up inbox entries (spec 007, #444). Honoured only while
     // the `followups` capability is on (#471) — off, the server pins it to
     // false whatever the client asked for. Omitted still means "enabled" for
@@ -754,6 +761,7 @@ const uiStateSchema = z
       .optional(),
     lastWorktree: z.boolean().optional(),
     lastAutonomous: z.boolean().optional(),
+    lastSandbox: z.boolean().optional(),
     lastGenerateFollowups: z.boolean().optional(),
     // Skill selection frequency (#408): name → times chosen, incremented on a successful run
     // start from EITHER composer (`/new`'s SourcePill and the follow-up `SkillsPicker`). Drives
@@ -1539,11 +1547,13 @@ export function createApp(deps: ServerDeps) {
   // back as if the server had proven it. Inferring here means the route says what it actually
   // sends, which is what lets the DTO be derived instead of maintained.
   const healthSnapshot = async () => {
-    const [checks, repo, config, workspace] = await Promise.all([
+    const [checks, repo, config, workspace, sandbox] = await Promise.all([
       detectEnvironment(),
       getRepoInfo(bootRoot),
       loadConfig(bootRoot),
       workspaceSummary(),
+      // Memoized per process and passive (never starts the sbx daemon) — see docker-sbx.ts.
+      detectSandboxCached(),
     ]);
     // Additive fields only below — the pre-forge shape is the most
     // externally-depended-on JSON in the app (BACKWARD_COMPATIBILITY.md §2).
@@ -1571,7 +1581,8 @@ export function createApp(deps: ServerDeps) {
       // Non-blocking: cached availability or null-until-warm — health must never pay a `gh`
       // shell-out (the bookmarklet aborts its port probe at 800 ms). See detectGithubCached.
       forge: forge ? { kind: forge.kind, ...(forge.detectCached() ?? {}) } : null,
-      capabilities: caps,
+      // `sandbox` is spread in only when detected: absent, not `undefined`, on the wire.
+      capabilities: sandbox ? { ...caps, sandbox } : caps,
       // Workspace enumeration (multi-project spec) — additive, id+name ONLY.
       // NEVER `projects[].root` here: health is the one CORS-open route, and
       // the repoRoot trim above exists precisely to keep absolute paths and
@@ -2917,6 +2928,7 @@ export function createApp(deps: ServerDeps) {
     composerDefaults: {
       autonomous: config.composerDefaults.autonomous ?? null,
       worktree: config.composerDefaults.worktree ?? null,
+      sandbox: config.composerDefaults.sandbox ?? null,
       inheritedAutonomous:
         process.env.CEZ_AUTONOMOUS_DEFAULT === '0'
           ? false
@@ -2995,6 +3007,10 @@ export function createApp(deps: ServerDeps) {
           else if (composerDefaults?.worktree !== undefined) {
             config.composerDefaults.worktree = composerDefaults.worktree;
           }
+          if (composerDefaults?.sandbox === null) delete config.composerDefaults.sandbox;
+          else if (composerDefaults?.sandbox !== undefined) {
+            config.composerDefaults.sandbox = composerDefaults.sandbox;
+          }
           if (resources?.maxParallel !== undefined) config.resources.maxParallel = resources.maxParallel;
           if (resources?.maxMonitoringSessions !== undefined) {
             config.resources.maxMonitoringSessions = resources.maxMonitoringSessions;
@@ -3071,6 +3087,7 @@ export function createApp(deps: ServerDeps) {
     composerDefaults: z
       .object({
         autonomous: z.boolean().nullable().optional(),
+        sandbox: z.boolean().nullable().optional(),
         worktree: z.boolean().nullable().optional(),
       })
       .optional(),
@@ -3869,6 +3886,22 @@ export function createApp(deps: ServerDeps) {
         const account = await resolveWorkspaceProfile(fallback, parsed.data.agentProfile);
         if ('error' in account) return c.json({ error: account.error }, 400);
       }
+      // Docker Sandboxes (spec 2026-09-22-docker-sandboxes): one policy decides, and every refusal
+      // says what to change. Variants are fine — each variant gets its own sandbox.
+      if (parsed.data.sandbox) {
+        const refusal = sandboxRunRefusal({
+          capability: await detectSandboxCached(),
+          backends: providersRequiredByWorkflow(workflow, fallback),
+          worktree: parsed.data.worktree,
+          agentProfile: parsed.data.agentProfile,
+          dispatch: Boolean(parsed.data.dispatch && capabilities().dispatch),
+          isGitRepo: (await getRepoInfo(repoRoot)) !== null,
+          // `sbx --clone` refuses to clone from a linked worktree, so a cezar booted inside one
+          // cannot sandbox at all (spec 2026-09-22-docker-sandboxes).
+          mainCheckout: !existsSync(join(repoRoot, '.git')) || statSync(join(repoRoot, '.git')).isDirectory(),
+        });
+        if (refusal) return c.json({ error: refusal }, 400);
+      }
       const variants = parsed.data.variants ?? 1;
       if (variants > 1) {
         // Variants require git worktrees to isolate their changes.
@@ -3893,6 +3926,7 @@ export function createApp(deps: ServerDeps) {
         systemPrompt: parsed.data.systemPrompt,
         worktree: parsed.data.worktree,
         autonomous: parsed.data.autonomous,
+        ...(parsed.data.sandbox ? { sandbox: true } : {}),
         // Opt-in inbox (#471): the capability is the ceiling, so a client asking
         // for follow-ups on a server that has them off gets a plain `false`
         // rather than an error — the run is still perfectly valid without them.
@@ -4182,7 +4216,7 @@ export function createApp(deps: ServerDeps) {
       const blocked = await providerActionError([providerForExistingRun(run)]);
       if (blocked) return c.json({ error: blocked }, 409);
       const cwd = run.worktreePath && existsSync(run.worktreePath) ? run.worktreePath : repoRoot;
-      const command = resumeCommand(run.runner, sessionId);
+      const command = resumeCommand(run.runner, sessionId, activeSandboxName(run));
       // Fails closed on an id we do not recognise — see resumeCommand (#431).
       if (!command) return c.json({ error: 'the recorded session id has an unexpected shape' }, 409);
       // The account that OWNS this session, not the project's current one (spec 2026-07-29).
@@ -4288,7 +4322,7 @@ export function createApp(deps: ServerDeps) {
         const sessionId = sessionStep?.sessionId;
         // An id resumeCommand refuses (#431) degrades to a fresh CLI in the worktree,
         // exactly like a run that never recorded a session.
-        const resume = sessionId && cliRunner === (run.runner ?? 'claude') ? resumeCommand(cliRunner, sessionId) : null;
+        const resume = sessionId && cliRunner === (run.runner ?? 'claude') ? resumeCommand(cliRunner, sessionId, activeSandboxName(run)) : null;
         const command = resume ?? cliRunner;
         // BOTH branches carry the account (spec 2026-07-29-agent-profiles): a resume needs the
         // config dir that holds its session, and a FRESH CLI in this worktree should still open
@@ -4560,6 +4594,8 @@ export function createApp(deps: ServerDeps) {
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
       if (manager.isActive(id)) return c.json({ error: 'run is active — cancel it first' }, 409);
+      // The sandbox mounts the worktree, so it goes with it.
+      await disposeSandboxOf(store, run, repoRoot);
       if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
       store.updateRun(id, { worktreePath: undefined, branch: undefined });
       return c.json({ removed: true });
@@ -4571,7 +4607,9 @@ export function createApp(deps: ServerDeps) {
       if (manager.isActive(id)) return c.json({ error: 'run is active — cancel it first' }, 409);
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
-      // Delete cleans up after itself: worktree + branch go with the run (spec 006).
+      // Delete cleans up after itself: worktree + branch go with the run (spec 006), and so does
+      // its sandbox (spec 2026-09-22-docker-sandboxes).
+      await disposeSandboxOf(store, run, repoRoot);
       if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
       return store.deleteRun(id) ? c.json({ deleted: true }) : c.json({ error: 'not found' }, 404);
     });
@@ -4762,6 +4800,7 @@ export function createApp(deps: ServerDeps) {
 
       for (const loser of losers) {
         if (manager.isActive(loser.id)) manager.cancel(loser.id);
+        await disposeSandboxOf(store, loser, repoRoot);
         if (loser.worktreePath) await removeWorktree(repoRoot, loser.worktreePath, loser.branch);
         store.updateRun(loser.id, { worktreePath: undefined, branch: undefined });
         store.setArchived(loser.id, true);
@@ -6227,8 +6266,17 @@ export function isSafeSessionId(sessionId: string): boolean {
  * guarantee than escaping, and platform-independent. Ids are UUID/CLI-minted
  * today; this keeps a future source safe.
  */
-export function resumeCommand(runner: string | undefined, sessionId: string): string | null {
+export function resumeCommand(runner: string | undefined, sessionId: string, sandboxName?: string): string | null {
   if (!isSafeSessionId(sessionId)) return null;
+  // A sandboxed run's session exists only inside its VM (spec 2026-09-22-docker-sandboxes), so the
+  // handoff resumes it there. No `-w`: `sbx exec` starts in the primary workspace — the worktree —
+  // which keeps a path out of the string, per the validate-don't-quote rule above. The name is
+  // validated the same way: `cez-<uuid>` or nothing.
+  if (sandboxName !== undefined) {
+    if (!isCezarSandboxName(sandboxName)) return null;
+    const inner = resumeCommand(runner, sessionId);
+    return runner === 'claude' || runner === 'codex' || runner === undefined ? `sbx exec -it ${sandboxName} ${inner}` : null;
+  }
   switch (runner) {
     case 'codex':
       return `codex resume ${sessionId}`;
@@ -6239,4 +6287,16 @@ export function resumeCommand(runner: string | undefined, sessionId: string): st
     default:
       return `claude --resume ${sessionId}`;
   }
+}
+
+/** The sandbox a run's session lives in, when it still has one (spec 2026-09-22-docker-sandboxes). */
+function activeSandboxName(run: { sandbox?: { name: string; removedAt?: string } }): string | undefined {
+  return run.sandbox && !run.sandbox.removedAt ? run.sandbox.name : undefined;
+}
+
+/** Remove a run's sandbox for good and record it. Best-effort, like the worktree removal it follows. */
+async function disposeSandboxOf(store: RunStore, run: RunRecord, repoRoot?: string): Promise<void> {
+  if (!run.sandbox || run.sandbox.removedAt) return;
+  await disposeRunSandbox(run, repoRoot);
+  if (store.getRun(run.id)) store.updateRun(run.id, { sandbox: { ...run.sandbox, removedAt: new Date().toISOString() } });
 }

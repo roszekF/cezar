@@ -228,7 +228,32 @@ All changes are additive.
 - **External, fast-moving, proprietary dependency.** `sbx` is free but closed-source and requires a Docker account. The feature is optional and absent without it.
 - **Contracts are additive only**: a run field, a POST field, a health capability, two env vars and a gitignored data dir. Rollback means hiding the toggle. Old records stay readable, and leftover VMs are removable with `sbx rm`.
 
-## 📋 Phasing
+## 📋 Implementation status (2026-09-22)
+
+All seven phases are implemented on branch `feat/docker-sandboxes` (fork `roszekF/cezar`). Phase 0 results are in `.ai/analysis/docker-sandboxes-spike.md`. The real-sbx suite passed on sbx 0.45.0 (Ubuntu 24.04), including a real-Claude end-to-end run. Screenshots are in `assets/2026-09-22-docker-sandboxes/`.
+
+**Where the code differs from the design above:**
+
+- **Per-run directory.** `.ai/cezar/sandbox/<runId>/` holds only the handoff journal (`handoff.md`) and the temp dir (`tmp/`). `sbx` cannot mount a single file read-write, only directories. `handoffPath()` resolves into it whenever that directory exists, so every reader agrees without a registry.
+  - Pasted images stay in `runs/<id>-images/` and are mounted read-only.
+  - The follow-up inbox (`todos.json`) is not merged. It is simply **off** for sandboxed runs.
+- **Temp directory.** `TMPDIR`, `TEMP`, `TMP` and `CLAUDE_CODE_TMPDIR` all point at the run directory's `tmp/`. Mount parents are root-owned inside the VM, and Claude refuses a temp dir it doesn't own.
+- **Env passing.** Env reaches the VM as bare `-e NAME` flags, with values taken from the `sbx` client's own env (verified on 0.45). There is no env file.
+- **Host-git hardening.** Pinned env alone does not override a rewritten `commondir`: git's ref store still reads it. The helper therefore snapshots `commondir` and `gitdir` and **fails closed** if either changes. Hooks and fsmonitor are turned off through `GIT_CONFIG_*` env, which also reaches `gh`'s git.
+- **`CEZ_SANDBOX=0`** makes `capabilities.sandbox` absent. There is no `disabled` state.
+- **Boot reconcile** stops *every* running `cez-*` VM of this repo, because at boot nothing is live yet in this process. It does not take the repo lock, and assumes one cezar process per repo.
+- **Dispatch and `cez automation`** prompts are dropped for sandboxed runs, and dispatch is refused at the route.
+- **Plan-first:** the toggle is disabled for plan-first runs.
+
+**Deferred (not built):**
+
+- **Memory guard.** It is not wired to VM memory. The VM is capped with the workspace memory limit instead, and the table's memory column shows only the `sbx` client.
+- **Global skill directories.** These are not mounted into the VM (the skill body still reaches the agent through the system prompt).
+- **Sandboxed plan-first runs.**
+- **A per-run memory figure** in the tasks table.
+- **Host uid ≠ 1000.** This is still untested (spike check d).
+
+
 
 Each phase ships as its own PR and leaves cezar working.
 

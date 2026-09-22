@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  __resetForgeDiscoveryWarningsForTests,
   defaultForgeHostCacheFile,
   parseGhAuthHosts,
   parseGlabAuthHosts,
@@ -21,6 +22,7 @@ import {
   WELL_KNOWN_FORGE_HOSTS,
   wellKnownForgeKind,
   writeForgeHostCache,
+  type ForgeDiscoveryRunner,
   type ForgeHostMap,
 } from './discovery.ts';
 
@@ -87,6 +89,16 @@ const GLAB_LOGGED_OUT_HOST = `gitlab.com
   - The token in GITLAB_TOKEN is invalid.
 `;
 
+/** A CLI that indents everything (or re-words its header): only the detail lines name the host. */
+const GH_INDENTED_ONLY = `  ✓ Logged in to ghe.acme.corp account alice (keyring)
+  - Active account: true
+  - Git operations protocol: https
+`;
+
+const GLAB_INDENTED_ONLY = `  ✓ Logged in to gitlab.acme.internal as bob (keyring)
+  ✓ API calls for gitlab.acme.internal are made over https protocol.
+`;
+
 const GH_NO_HOSTS = `You are not logged into any GitHub hosts. Run gh auth login to authenticate.
 `;
 
@@ -145,6 +157,15 @@ describe('parseGhAuthHosts', () => {
       'github.com',
     ]);
   });
+
+  // The header line is one line of formatting; the rung must not depend on it alone.
+  it('reads the host out of an indented `Logged in to` line when no header names it', () => {
+    expect(parseGhAuthHosts(GH_INDENTED_ONLY)).toEqual(['ghe.acme.corp']);
+  });
+
+  it('dedupes the header against the detail line naming the same host', () => {
+    expect(parseGhAuthHosts(GH_LOGGED_IN_ONE_HOST)).toEqual(['github.com']);
+  });
 });
 
 describe('parseGlabAuthHosts', () => {
@@ -169,6 +190,10 @@ describe('parseGlabAuthHosts', () => {
 
   it('answers [] on garbage input', () => {
     expect(parseGlabAuthHosts(GARBAGE_INPUT)).toEqual([]);
+  });
+
+  it('reads the host out of an indented `Logged in to` line when no header names it', () => {
+    expect(parseGlabAuthHosts(GLAB_INDENTED_ONLY)).toEqual(['gitlab.acme.internal']);
   });
 });
 
@@ -273,6 +298,7 @@ describe('warmForgeDiscovery', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(realpathSync(tmpdir()), 'cez-forge-discovery-warm-'));
     file = join(dir, 'forge-hosts.json');
+    __resetForgeDiscoveryWarningsForTests();
   });
 
   afterEach(() => {
@@ -333,6 +359,36 @@ describe('warmForgeDiscovery', () => {
       'gitlab.acme.internal': 'gitlab',
       'github.com': 'github',
     });
+  });
+
+  // A CLI that ran and named nothing leaves every non-SaaS host of its kind unclassified; without
+  // a line about it, a parser that stopped matching looks exactly like a working install.
+  it('warns once per process when an installed CLI names no host', async () => {
+    const warnings: string[] = [];
+    const run: ForgeDiscoveryRunner = async (bin) =>
+      bin === 'gh' ? { stdout: '', stderr: GH_NO_HOSTS } : { stdout: '', stderr: GLAB_LOGGED_IN_ONE_HOST };
+
+    expect(await warmForgeDiscovery({ cacheFile: file, run, warn: (m) => warnings.push(m) })).toEqual({
+      'gitlab.com': 'gitlab',
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('gh auth status');
+    // The warm-up repeats every ten minutes; the diagnostic does not.
+    await warmForgeDiscovery({ cacheFile: file, run, warn: (m) => warnings.push(m) });
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('says nothing for a CLI that is not installed, or for one that names a host', async () => {
+    const warnings: string[] = [];
+    await warmForgeDiscovery({
+      cacheFile: file,
+      warn: (m) => warnings.push(m),
+      run: async (bin) =>
+        bin === 'gh'
+          ? { stdout: '', stderr: '', notFound: true }
+          : { stdout: '', stderr: GLAB_MULTIPLE_HOSTS_WITH_SELF_MANAGED },
+    });
+    expect(warnings).toEqual([]);
   });
 
   it('a host reported by both CLIs is not expected in practice, but glab wins when it runs after gh', async () => {

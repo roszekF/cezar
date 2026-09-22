@@ -105,6 +105,35 @@ describe('detectEnvironment — glab probe', () => {
     }
   });
 
+  // Sequential reads with the full timeout each would put the health route's worst case at twice
+  // the probe's budget, which is the one thing the budget exists to bound.
+  it('spends ONE budget across both reads: the second gets what the first left', async () => {
+    const SLOW_MS = 120;
+    // Only the first read is slow, so the budget the second one gets is observably smaller.
+    execFileMock.mockImplementation((...args: unknown[]) => {
+      const bin = args[0] as string;
+      const argv = (args[1] as string[] | undefined) ?? [];
+      const cb = args[args.length - 1] as Callback;
+      if (bin !== 'glab') {
+        cb(enoent(bin));
+        return;
+      }
+      const stdout = argv.includes('token') ? 'glpat-example\n' : 'gitlab.com\n';
+      const respond = () => cb(null, { stdout, stderr: '' });
+      if (argv.includes('token')) respond();
+      else setTimeout(respond, SLOW_MS);
+    });
+
+    await detectEnvironment();
+    const [first, second] = glabCalls();
+    expect(first?.opts.timeout).toBe(2_500);
+    expect(second?.opts.timeout).toBeLessThanOrEqual(2_500 - SLOW_MS);
+    // A spent budget must not read as "no timeout", which is what `execFile` makes of 0.
+    expect(second?.opts.timeout).toBeGreaterThan(0);
+    // The pair's worst case is one budget: what the first read spent plus what the second may.
+    expect(SLOW_MS + (second?.opts.timeout ?? 0)).toBeLessThanOrEqual(2_500);
+  });
+
   it('falls back to gitlab.com when no default host is configured', async () => {
     mockExecFile({ glab: glabConfig('\n', 'glpat-example\n') });
     const checks = await detectEnvironment();

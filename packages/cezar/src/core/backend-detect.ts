@@ -144,10 +144,11 @@ async function probeGh(): Promise<BackendCheck> {
   }
 }
 
-/** How long the `glab` probe may take. `detectEnvironment` feeds `healthSnapshot`, and a snapshot
- *  older than `HEALTH_MAX_STALE_MS` makes `GET /api/v1/health` WAIT for this — the bookmarklet's
- *  latency budget (CODE_REVIEW.md priority 2). Local reads answer in milliseconds; this is only the
- *  ceiling for a pathological host. */
+/** How long the `glab` probe may take IN TOTAL: its two reads share this one budget, so the
+ *  worst case is this number and not twice it. `detectEnvironment` feeds `healthSnapshot`, and a
+ *  snapshot older than `HEALTH_MAX_STALE_MS` makes `GET /api/v1/health` WAIT for this — the
+ *  bookmarklet's latency budget (CODE_REVIEW.md priority 2). Local reads answer in milliseconds;
+ *  this is only the ceiling for a pathological host. */
 const GLAB_PROBE_TIMEOUT_MS = 2_500;
 
 /** `glab`'s own version notifier is its one network touch on an otherwise local command; off, so
@@ -165,7 +166,9 @@ const GLAB_PROBE_ENV = { ...process.env, GLAB_CHECK_UPDATE: 'false' };
  * Two local reads, because `glab config get token` without `--host` only sees the environment:
  * the default host (which also proves `glab` is installed and runnable), then that host's token.
  * `glab`'s lookup order is environment → local → global, so a `GITLAB_TOKEN` in the environment
- * counts as authenticated exactly as `glab` itself would count it.
+ * counts as authenticated exactly as `glab` itself would count it. They run against ONE deadline,
+ * not one timeout each: two sequential reads with the full budget apiece would put the health
+ * route's worst case at twice the number the budget was sized for.
  *
  * What this can and cannot see: it answers "is a credential configured for the host `glab` would
  * use by default", not "is that credential still valid" — a revoked or expired token still reads
@@ -177,9 +180,13 @@ const GLAB_PROBE_ENV = { ...process.env, GLAB_CHECK_UPDATE: 'false' };
  */
 async function probeGlab(): Promise<BackendCheck> {
   try {
-    const opts = { timeout: GLAB_PROBE_TIMEOUT_MS, env: GLAB_PROBE_ENV };
-    const { stdout: host } = await exec('glab', ['config', 'get', 'host'], opts);
-    const { stdout: token } = await exec('glab', ['config', 'get', 'token', '--host', host.trim() || 'gitlab.com'], opts);
+    const deadline = Date.now() + GLAB_PROBE_TIMEOUT_MS;
+    const { stdout: host } = await exec('glab', ['config', 'get', 'host'], glabProbeOptions(deadline));
+    const { stdout: token } = await exec(
+      'glab',
+      ['config', 'get', 'token', '--host', host.trim() || 'gitlab.com'],
+      glabProbeOptions(deadline),
+    );
     if (!token.trim()) throw new Error('no token configured');
     return { name: 'glab', available: true, version: 'authenticated' };
   } catch {
@@ -189,6 +196,12 @@ async function probeGlab(): Promise<BackendCheck> {
       hint: 'optional: install the GitLab CLI and run `glab auth login` (only needed for GitLab projects)',
     };
   }
+}
+
+/** One probe read's options: whatever is left of the pair's shared budget. Never 0 — `execFile`
+ *  reads a timeout of 0 as "no timeout at all", the exact opposite of a spent budget. */
+function glabProbeOptions(deadline: number): { timeout: number; env: NodeJS.ProcessEnv } {
+  return { timeout: Math.max(1, deadline - Date.now()), env: GLAB_PROBE_ENV };
 }
 
 async function probeGit(): Promise<BackendCheck> {

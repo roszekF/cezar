@@ -59,7 +59,7 @@
 | 4 | 4.4-review-fix-3 | Restore the partial forge mock in the repo-handle test | inline | done | e340385d |
 | 5 | 5.1 | Reclaim a lease whose age exactly equals the window | dispatch | done | pending |
 | 5 | 5.2 | Trim and validate the host in parseRemote and checkout | dispatch | done | pending |
-| 5 | 5.3 | Share one budget across the glab probe reads | dispatch:cheap | todo | — |
+| 5 | 5.3 | Share one budget across the glab probe reads | dispatch:cheap | done | pending |
 | 5 | 5.4 | Count GitLab diff lines without dropping content | dispatch:cheap | todo | — |
 | 5 | 5.5 | Read every auth-status host line in discovery | dispatch | todo | — |
 | 5 | 5.6 | Drop the non-null assertions in the GitLab adapter | dispatch:cheap | todo | — |

@@ -192,6 +192,7 @@ import {
   listForgeComments,
   listForgeItems,
   parseRemote,
+  refreshForgeDiscovery,
   resolveForge,
   searchForgeItems,
   type ForgeAvailability,
@@ -1728,6 +1729,11 @@ export function createApp(deps: ServerDeps) {
   // not, so tests never spawn probes here). Fire-and-forget: a probe that fails leaves that row
   // cold, which is exactly the state every reader already handles.
   if (deps.socketHub) void warmAgentKnowledge();
+  // Forge discovery (spec 2026-08-10-forge-provider-adapters § Forge discovery): ask `gh` / `glab`
+  // which hosts they are signed into so an on-prem forge classifies without config. Same gate,
+  // same fire-and-forget: until it lands the host ladder answers from the well-known hosts and the
+  // cache file, which is exactly what every reader already handles. `startServer` keeps it fresh.
+  if (deps.socketHub) void refreshForgeDiscovery();
 
   // ---- chained family: host model catalog (workspace-level) ----
   const modelsRoutes = new Hono<ProjectApiEnv>()
@@ -5973,6 +5979,9 @@ export function createApp(deps: ServerDeps) {
   return routed;
 }
 
+/** How often `startServer` re-runs forge discovery's CLI probes (spec 2026-08-10-forge-provider-adapters). */
+const FORGE_DISCOVERY_INTERVAL_MS = 10 * 60_000;
+
 export function startServer(deps: ServerDeps, port: number): ServerType {
   const workspaceEvents = deps.workspaceEvents ?? new WorkspaceEventBus();
   const skillsUpdate = deps.skillsUpdate ?? new SkillsUpdateService({ invalidateCatalog: refreshTeamSkills });
@@ -6102,7 +6111,11 @@ export function startServer(deps: ServerDeps, port: number): ServerType {
       })).then(() => automationScheduler.start()).catch(() => undefined);
     }).catch(() => undefined);
   });
-  server.once('close', () => { unsubscribe(); coordinator.stop(); automationScheduler.stop(); });
+  // Re-warm forge discovery on a bounded cadence (a `gh auth login` to a new host shows up without a
+  // restart) — off the request path, `unref`'d so it never holds the process open.
+  const forgeDiscoveryTimer = setInterval(() => void refreshForgeDiscovery(), FORGE_DISCOVERY_INTERVAL_MS);
+  forgeDiscoveryTimer.unref?.();
+  server.once('close', () => { unsubscribe(); coordinator.stop(); automationScheduler.stop(); clearInterval(forgeDiscoveryTimer); });
   socketHub.attach(server, (req) => verifyWsUpgrade(req, deps.bindHost));
   return server;
 }

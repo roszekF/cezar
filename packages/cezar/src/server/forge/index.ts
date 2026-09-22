@@ -1,4 +1,12 @@
 import type { RepoInfo } from '../git.ts';
+import {
+  defaultForgeHostCacheFile,
+  readForgeHostCache,
+  warmForgeDiscovery,
+  wellKnownForgeKind,
+  type ForgeHostMap,
+  type WarmForgeDiscoveryOptions,
+} from './discovery.ts';
 import { createGithubDriver } from './github.ts';
 import type {
   ForgeChecksData,
@@ -14,8 +22,10 @@ import type {
 
 /**
  * Forge resolution (cockpit-ui redesign spec §"Forge-driver seam"): map the
- * repo's origin remote to a driver — github.com → the GitHub driver, anything
- * else (GitLab, self-hosted, no remote, not a repo) → null. The health route
+ * repo's origin remote to a driver — a host classified `github` (github.com, or
+ * a GitHub Enterprise host `gh auth status` reported) → the GitHub driver,
+ * anything else (GitLab until its driver lands, unknown hosts, no remote, not a
+ * repo) → null. The health route
  * serializes the result as `forge: {kind, available, reason?} | null`; a null
  * forge means plain-git features only (diffs, commit, push, branches).
  */
@@ -54,24 +64,89 @@ export function parseRemote(remote: string): ParsedRemote | null {
   return { host: host.toLowerCase(), owner, repo };
 }
 
-/** Remote host → forge kind. The one host table both `resolveForge` and the
- *  registry probe read; GitLab lands here later as one more row. */
-const FORGE_HOSTS: Record<string, ForgeKind> = { 'github.com': 'github' };
+// ---- Host classification (spec 2026-08-10-forge-provider-adapters § Forge discovery) ----------
+
+/** The discovered `host → kind` map (rung 2), or null until first use. Loaded SYNCHRONOUSLY, once,
+ *  on the first classification, and replaced wholesale after every warm-up — so the call path
+ *  (`forgeKindOfRemote` runs for every project on every registry listing, #698) never does I/O
+ *  beyond that single first read. */
+let discoveredHosts: ForgeHostMap | null = null;
+
+/** Test seam: the cache file the lazy load and the warm-up use instead of the real one. */
+let cacheFileOverride: string | null = null;
+
+/** The cache file to read and warm, or null when there is none to touch. Under vitest the real
+ *  `~/.cache/cez` is never read or written — the same `process.env.VITEST` guard
+ *  `open-in-terminal.ts` uses for launchers — so a test sees an empty map unless it seeds one. */
+function forgeHostCacheFile(): string | null {
+  if (cacheFileOverride) return cacheFileOverride;
+  return process.env.VITEST ? null : defaultForgeHostCacheFile();
+}
+
+function loadDiscoveredHosts(): ForgeHostMap {
+  if (!discoveredHosts) {
+    const file = forgeHostCacheFile();
+    // `readForgeHostCache` never throws: missing, corrupt or unreadable → an empty map.
+    discoveredHosts = file ? readForgeHostCache(file) : {};
+  }
+  return discoveredHosts;
+}
+
+/**
+ * Remote host → forge kind: the well-known constants first (no I/O), then the in-memory discovery
+ * map, else null. A host the cache records as `'none'` is null too. The one host ladder
+ * `resolveForge`, `forgeKindOfRemote` and `forgeWebRoot` all read.
+ */
+export function forgeKindOfHost(host: string): ForgeKind | null {
+  const key = host.trim().toLowerCase();
+  const known = wellKnownForgeKind(key);
+  if (known) return known;
+  const discovered = loadDiscoveredHosts()[key];
+  return discovered && discovered !== 'none' ? discovered : null;
+}
+
+/**
+ * Re-run discovery (the CLI probes) and swap the in-memory map for the merged result. Called at
+ * boot and on a bounded interval by the server — never from a request handler. Never throws.
+ * Under vitest it is a no-op unless the caller injects a runner, so no test ever spawns `gh`/`glab`
+ * or writes the real cache.
+ */
+export async function refreshForgeDiscovery(opts: WarmForgeDiscoveryOptions = {}): Promise<void> {
+  const cacheFile = opts.cacheFile ?? forgeHostCacheFile();
+  if (!cacheFile || (process.env.VITEST && !opts.run)) return;
+  try {
+    discoveredHosts = await warmForgeDiscovery({ ...opts, cacheFile });
+  } catch {
+    // warmForgeDiscovery never throws; a surprise leaves the previous map in place.
+  }
+}
+
+/** Test seam: pin the discovery map (`null` resets to the lazy load). */
+export function __setForgeHostsForTests(map: ForgeHostMap | null): void {
+  discoveredHosts = map;
+}
+
+/** Test seam: point the lazy load and the warm-up at `file` (`null` restores the default), and
+ *  reset the map so the next classification reads it. */
+export function __setForgeHostCacheFileForTests(file: string | null): void {
+  cacheFileOverride = file;
+  discoveredHosts = null;
+}
 
 /**
  * Which forge a remote URL belongs to, without building a driver (#698): the
  * registry's per-project probe classifies each root from its remote alone —
- * plain string parsing, no `gh` shell-out — so the sidebar can gate each
- * project's GitHub tab on the project's own remote.
+ * plain string parsing plus the in-memory host map, no `gh` shell-out — so the
+ * sidebar can gate each project's forge tab on the project's own remote.
  */
 export function forgeKindOfRemote(remote: string | undefined): ForgeKind | null {
   const parsed = remote ? parseRemote(remote) : null;
-  return parsed ? (FORGE_HOSTS[parsed.host] ?? null) : null;
+  return parsed ? forgeKindOfHost(parsed.host) : null;
 }
 
 /**
  * A remote's web root — `https://github.com/owner/repo` — or null for anything not on a known
- * forge host.
+ * or discovered forge host.
  *
  * Built from the PARSED remote, never by string-editing the raw one, and that is the point: a
  * remote may carry credentials (`https://user:token@github.com/o/r.git`), and this is a value the
@@ -79,18 +154,22 @@ export function forgeKindOfRemote(remote: string | undefined): ForgeKind | null 
  */
 export function forgeWebRoot(remote: string | undefined): string | null {
   const parsed = remote ? parseRemote(remote) : null;
-  if (!parsed || !(parsed.host in FORGE_HOSTS)) return null;
+  if (!parsed || !forgeKindOfHost(parsed.host)) return null;
   return `https://${parsed.host}/${parsed.owner}/${parsed.repo}`;
 }
 
-/** Remote host → driver | null. GitLab lands here later as one more case. */
+/** Remote host → driver | null. Any `github` host (github.com or a GitHub Enterprise host) gets the
+ *  GitHub driver — `gh` itself resolves the host from the repo's remote. */
 export function resolveForge(repoInfo: RepoInfo | null): ForgeDriver | null {
   if (!repoInfo?.remote) return null;
   const parsed = parseRemote(repoInfo.remote);
   if (!parsed) return null;
-  if (FORGE_HOSTS[parsed.host] === 'github') {
+  const kind = forgeKindOfHost(parsed.host);
+  if (kind === 'github') {
     return createGithubDriver(repoInfo.root, { owner: parsed.owner, repo: parsed.repo });
   }
+  // `gitlab` hosts resolve no driver until the GitLab adapter lands (spec
+  // 2026-08-10-forge-provider-adapters, Step 3.1); the routes degrade in-payload meanwhile.
   return null;
 }
 

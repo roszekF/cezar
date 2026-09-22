@@ -1,7 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import * as childProcess from 'node:child_process';
+import * as fs from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RepoInfo } from '../git.ts';
 import {
+  __setForgeHostCacheFileForTests,
+  __setForgeHostsForTests,
+  forgeKindOfHost,
   forgeKindOfRemote,
+  forgeWebRoot,
+  refreshForgeDiscovery,
   forgePrDiff,
   forgeRefStatus,
   listForgeChecks,
@@ -13,6 +23,17 @@ import {
   searchForgeItems,
 } from './index.ts';
 import type { ForgeChecksData, ForgeDriver, ForgeItem, ForgePrDiffResult, ForgeRefStatusData } from './types.ts';
+
+// Pass-through spies, so the discovery cases below can assert the classification call path does
+// no file read and spawns nothing (spec 2026-08-10-forge-provider-adapters § Forge discovery).
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFile: vi.fn(actual.execFile), spawn: vi.fn(actual.spawn) };
+});
 
 /** Forge resolution (spec §"Forge-driver seam"): remote host → driver | null. */
 
@@ -50,7 +71,7 @@ describe('forgeKindOfRemote', () => {
   it.each([
     ['https://github.com/acme/demo.git', 'github'],
     ['git@github.com:acme/demo.git', 'github'],
-    ['git@gitlab.com:acme/demo.git', null],
+    ['git@gitlab.com:acme/demo.git', 'gitlab'], // well-known, even with an empty discovery map
     ['https://git.example.com/acme/demo.git', null],
     ['/srv/git/demo.git', null],
     [undefined, null],
@@ -68,7 +89,7 @@ describe('resolveForge', () => {
     expect(resolveForge(info('git@github.com:acme/demo.git'))?.kind).toBe('github');
   });
 
-  it('returns null for an unknown forge host (GitLab lands here later)', () => {
+  it('returns null for a gitlab.com remote (the GitLab driver lands in Step 3.1)', () => {
     expect(resolveForge(info('git@gitlab.com:acme/demo.git'))).toBeNull();
   });
 
@@ -86,6 +107,115 @@ describe('resolveForge', () => {
 
   it('returns null for a local-path remote', () => {
     expect(resolveForge(info('/srv/git/demo.git'))).toBeNull();
+  });
+});
+
+describe('forge discovery in the host ladder', () => {
+  // Spec 2026-08-10-forge-provider-adapters § Forge discovery: well-known → in-memory discovery
+  // map → null, and the map is the only thing an on-prem host can be classified from.
+  afterEach(() => {
+    __setForgeHostsForTests(null);
+    __setForgeHostCacheFileForTests(null);
+  });
+
+  it('classifies an on-prem gitlab host from the discovery map, with a web root but no driver yet', () => {
+    __setForgeHostsForTests({ 'gitlab.acme.internal': 'gitlab' });
+    const remote = 'git@gitlab.acme.internal:platform/api.git';
+    expect(forgeKindOfRemote(remote)).toBe('gitlab');
+    expect(forgeWebRoot(remote)).toBe('https://gitlab.acme.internal/platform/api');
+    expect(resolveForge(info(remote))).toBeNull();
+  });
+
+  it('builds the GitHub driver for a GitHub Enterprise host from the discovery map', () => {
+    __setForgeHostsForTests({ 'github.acme.internal': 'github' });
+    const remote = 'https://github.acme.internal/platform/api.git';
+    expect(forgeKindOfRemote(remote)).toBe('github');
+    expect(forgeWebRoot(remote)).toBe('https://github.acme.internal/platform/api');
+    expect(resolveForge(info(remote))?.kind).toBe('github');
+  });
+
+  it('answers null for a host absent from the map', () => {
+    __setForgeHostsForTests({ 'gitlab.acme.internal': 'gitlab' });
+    const remote = 'git@git.other.internal:platform/api.git';
+    expect(forgeKindOfRemote(remote)).toBeNull();
+    expect(forgeWebRoot(remote)).toBeNull();
+    expect(resolveForge(info(remote))).toBeNull();
+  });
+
+  it("answers null for a host recorded as 'none'", () => {
+    __setForgeHostsForTests({ 'git.acme.internal': 'none' });
+    expect(forgeKindOfHost('git.acme.internal')).toBeNull();
+    expect(forgeKindOfRemote('git@git.acme.internal:platform/api.git')).toBeNull();
+  });
+
+  it('keeps the well-known hosts with an empty map, case-insensitively', () => {
+    __setForgeHostsForTests({});
+    expect(forgeKindOfHost('GitLab.com')).toBe('gitlab');
+    expect(forgeKindOfHost('github.com')).toBe('github');
+  });
+
+  describe('with a cache file', () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'cez-forge-hosts-'));
+      vi.mocked(fs.readFileSync).mockClear();
+      vi.mocked(childProcess.execFile).mockClear();
+      vi.mocked(childProcess.spawn).mockClear();
+    });
+    afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+    const writeCache = (file: string, hosts: Record<string, string>): void =>
+      writeFileSync(file, JSON.stringify({ version: 1, hosts, updatedAt: '2026-09-22T00:00:00.000Z' }));
+
+    it('loads the cache once, lazily, and classifies with no further I/O', () => {
+      const file = join(dir, 'forge-hosts.json');
+      writeCache(file, { 'gitlab.acme.internal': 'gitlab' });
+      __setForgeHostCacheFileForTests(file);
+      expect(fs.readFileSync).not.toHaveBeenCalled(); // nothing read until first use
+
+      expect(forgeKindOfRemote('git@gitlab.acme.internal:platform/api.git')).toBe('gitlab');
+      expect(vi.mocked(fs.readFileSync).mock.calls.filter(([p]) => p === file)).toHaveLength(1);
+
+      vi.mocked(fs.readFileSync).mockClear();
+      for (let i = 0; i < 5; i++) {
+        forgeKindOfRemote('git@gitlab.acme.internal:platform/api.git');
+        forgeKindOfRemote('https://github.com/acme/demo.git');
+        forgeWebRoot('git@git.other.internal:platform/api.git');
+      }
+      expect(fs.readFileSync).not.toHaveBeenCalled();
+      expect(childProcess.execFile).not.toHaveBeenCalled();
+      expect(childProcess.spawn).not.toHaveBeenCalled();
+    });
+
+    it('treats a missing or corrupt cache file as an empty map', () => {
+      __setForgeHostCacheFileForTests(join(dir, 'absent.json'));
+      expect(forgeKindOfHost('gitlab.acme.internal')).toBeNull();
+      const corrupt = join(dir, 'corrupt.json');
+      writeFileSync(corrupt, '{not json');
+      __setForgeHostCacheFileForTests(corrupt);
+      expect(forgeKindOfHost('gitlab.acme.internal')).toBeNull();
+      expect(forgeKindOfHost('gitlab.com')).toBe('gitlab');
+    });
+
+    it('swaps in the map a warm-up returns', async () => {
+      const file = join(dir, 'forge-hosts.json');
+      __setForgeHostCacheFileForTests(file);
+      expect(forgeKindOfHost('github.acme.internal')).toBeNull();
+      await refreshForgeDiscovery({
+        run: async (bin) =>
+          bin === 'gh'
+            ? { stdout: '', stderr: 'github.acme.internal\n  ✓ Logged in to github.acme.internal account someone (keyring)\n' }
+            : { stdout: '', stderr: '', notFound: true },
+      });
+      expect(forgeKindOfHost('github.acme.internal')).toBe('github');
+    });
+
+    it('never warms from a test without an injected runner', async () => {
+      __setForgeHostCacheFileForTests(join(dir, 'forge-hosts.json'));
+      await refreshForgeDiscovery();
+      expect(childProcess.execFile).not.toHaveBeenCalled();
+      expect(fs.existsSync(join(dir, 'forge-hosts.json'))).toBe(false);
+    });
   });
 });
 
@@ -129,8 +259,8 @@ describe('ForgeDriver optional capabilities', () => {
     expect(minimal.listAll).toBeUndefined();
   });
 
-  it('still resolves no driver for a gitlab remote', () => {
-    expect(forgeKindOfRemote('git@gitlab.com:acme/demo.git')).toBeNull();
+  it('classifies a gitlab remote but still resolves no driver for it', () => {
+    expect(forgeKindOfRemote('git@gitlab.com:acme/demo.git')).toBe('gitlab');
     expect(resolveForge(info('git@gitlab.com:acme/demo.git'))).toBeNull();
   });
 });

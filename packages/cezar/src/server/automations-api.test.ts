@@ -10,7 +10,7 @@ import { RunStore } from '../runs/store.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { __setForgeHostsForTests } from './forge/index.ts';
 import { apiRequest } from './loopback-request.testkit.ts';
-import { createApp, WorkspaceEventBus } from './server.ts';
+import { createApp, githubAutomationsBlocker, WorkspaceEventBus } from './server.ts';
 
 describe('GitHub automation API', () => {
   let root: string;
@@ -334,13 +334,14 @@ function readFileOrEmpty(path: string): string {
 
 /**
  * Which projects can run GITHUB-EVENT automations (spec 2026-08-10-forge-provider-adapters,
- * Step 4.6). The poller shells `gh`, so "a forge resolves" is not enough — it has to be a GitHub
- * forge. Before Step 3.1 no GitLab driver existed and the literal host check happened to be
+ * Step 4.6). The poller shells `gh` against github.com with no `--hostname`, so "a forge resolves"
+ * is not enough, and neither is "the forge is a GitHub one": only the literal host github.com can
+ * be served. Before Step 3.1 no GitLab driver existed and the literal host check happened to be
  * equivalent; now it is not, and `GET /automations` must not report a GitLab project as ready for
  * a GitHub trigger. Availability only: every route, status code, schema and the nav item are
  * untouched, and schedule automations work on any remote at all.
  */
-describe('GitHub-event automation availability by forge kind', () => {
+describe('GitHub-event automation availability by remote host', () => {
   let root: string;
   let home: string;
   let store: RunStore;
@@ -407,10 +408,14 @@ describe('GitHub-event automation availability by forge kind', () => {
     expect(await availability(app())).toEqual({ available: false, reason: 'GitHub automations need a GitHub remote' });
   });
 
-  it('counts a GitHub Enterprise host discovery classified as github', async () => {
+  // A GHE host IS a GitHub remote — `resolveForge` gives it the GitHub driver and its `/github*`
+  // routes work — but `automations/github-poller.ts` passes no `cwd` and no `--hostname` to `gh`
+  // and matches candidates against the literal `https://api.github.com/repos/<owner>/<repo>`, so
+  // arming it would poll github.com/acme/demo instead. Its own reason names the gap.
+  it('refuses a GitHub Enterprise host, which the github.com-only poller cannot serve', async () => {
     __setForgeHostsForTests({ 'ghe.example.com': 'github' });
     remote('git@ghe.example.com:acme/demo.git');
-    expect(await availability(app())).toEqual({ available: true, reason: undefined });
+    expect(await availability(app())).toEqual({ available: false, reason: 'GitHub automations need a github.com remote' });
   });
 
   // The forge only ever gates the GITHUB kind: a schedule needs no forge, so it must create,
@@ -448,5 +453,43 @@ describe('GitHub-event automation availability by forge kind', () => {
     }
     expect(check).toMatchObject({ status: 'error', error: 'No GitHub remote is configured' });
     expect(readFileOrEmpty(join(root, '.ai/cezar/automation-receipts.ndjson'))).toBe('');
+  });
+});
+
+/**
+ * The single decision the three GitHub-event sites share (the `/automations` availability, the
+ * manual check and the boot `registerAutomationProject`). Testing it directly is how the boot
+ * registration is covered: `registerAutomationProject` lives inside `startServer`'s closure, and a
+ * project the blocker refuses gets no `github` handle, so it never arms a poller.
+ */
+describe('githubAutomationsBlocker', () => {
+  afterEach(() => __setForgeHostsForTests(null));
+
+  it('lets github.com through, in every remote form', () => {
+    expect(githubAutomationsBlocker('https://github.com/acme/demo.git')).toBeNull();
+    expect(githubAutomationsBlocker('git@github.com:acme/demo.git')).toBeNull();
+    expect(githubAutomationsBlocker('ssh://git@github.com/acme/demo.git')).toBeNull();
+  });
+
+  it('refuses a GitHub Enterprise host with its own reason, so boot arms no poller for it', () => {
+    __setForgeHostsForTests({ 'ghe.example.com': 'github' });
+    expect(githubAutomationsBlocker('git@ghe.example.com:acme/demo.git')).toEqual({
+      available: false,
+      reason: 'GitHub automations need a github.com remote',
+    });
+  });
+
+  it('refuses a GitLab host with the Step 4.6 reason', () => {
+    expect(githubAutomationsBlocker('https://gitlab.com/acme/demo.git')).toEqual({
+      available: false,
+      reason: 'GitHub automations need a GitHub remote',
+    });
+  });
+
+  it('keeps the original text for no remote, a local path and an unclaimed host', () => {
+    const original = { available: false, reason: 'No GitHub remote is configured' };
+    expect(githubAutomationsBlocker(undefined)).toEqual(original);
+    expect(githubAutomationsBlocker('/srv/repos/demo')).toEqual(original);
+    expect(githubAutomationsBlocker('https://git.example.com/acme/demo.git')).toEqual(original);
   });
 });

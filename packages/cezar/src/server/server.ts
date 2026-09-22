@@ -1097,6 +1097,35 @@ async function probeWritableDir(dir: string, create: boolean): Promise<string | 
   }
 }
 
+/** The one host GitHub-EVENT automations can serve (spec 2026-08-10-forge-provider-adapters,
+ *  Step 4.6). */
+const GITHUB_AUTOMATIONS_HOST = 'github.com';
+
+/**
+ * Why GITHUB-EVENT automations cannot serve `remote`, or null when they can.
+ *
+ * The gate is the LITERAL host, not the forge kind, because `automations/github-poller.ts` is
+ * github.com-shaped: its `run` passes neither `cwd` nor `--hostname` to `gh` (so every call
+ * resolves to github.com whatever the project's remote is) and it filters candidates against the
+ * literal `https://api.github.com/repos/<owner>/<repo>`. A GitHub Enterprise project IS on a
+ * GitHub remote, but arming it would poll the same-named repo on github.com — a stranger's
+ * issues — and launch agent runs from them. Widening this needs a host-aware poller first; until
+ * then GHE gets its own truthful reason rather than the GitLab one.
+ *
+ * The three callers (the `/automations` availability, the manual check and the boot
+ * `registerAutomationProject`) share this single decision so they can never drift apart.
+ */
+export function githubAutomationsBlocker(remote: string | undefined): { available: false; reason: string } | null {
+  const parsed = remote ? parseRemote(remote) : null;
+  if (parsed?.host === GITHUB_AUTOMATIONS_HOST) return null;
+  // A GitHub Enterprise host (well-known or discovered) is a GitHub remote the poller still
+  // cannot reach; a GitLab one is the Step 4.6 case; no forge at all keeps the original text.
+  const kind = parsed ? forgeKindOfRemote(remote) : null;
+  if (kind === 'github') return { available: false, reason: 'GitHub automations need a github.com remote' };
+  if (kind) return { available: false, reason: 'GitHub automations need a GitHub remote' };
+  return { available: false, reason: 'No GitHub remote is configured' };
+}
+
 // The return type is INFERRED on purpose: it is the chained app type built at the bottom of
 // this function, and `AppType` (src/server/app-type.ts) is `ReturnType<typeof createApp>`.
 // Annotating it `Hono` here would erase every route from the type and leave the typed client
@@ -3441,15 +3470,15 @@ export function createApp(deps: ServerDeps) {
     .use('/automation-log/*', requireAutomations)
     .get('/automations', async (c) => {
       const { root, automationStore } = c.get('project');
-      // `available` is about GITHUB-EVENT automations only — they poll through `gh`
+      // `available` is about GITHUB-EVENT automations only — they poll github.com through `gh`
       // (`automations/github-poller.ts`) — so the question is not "does any forge resolve" but
-      // "is this project's forge a GitHub one" (spec 2026-08-10-forge-provider-adapters,
-      // Step 4.6). A GitHub Enterprise host discovery classified as `github` counts; a GitLab
-      // remote, which since Step 3.1 does resolve to a driver, does not. Schedule automations
-      // are unaffected — they need no forge at all.
+      // "can that poller serve this remote" (`githubAutomationsBlocker`, spec
+      // 2026-08-10-forge-provider-adapters, Step 4.6). A GitLab remote, which since Step 3.1 does
+      // resolve to a driver, cannot; nor can a GitHub Enterprise one, and each says so in its own
+      // words. Schedule automations are unaffected — they need no forge at all.
       const repoInfo = await getRepoInfo(root);
-      const forgeKind = forgeKindOfRemote(repoInfo?.remote);
-      const forge = forgeKind === 'github' ? resolveForge(repoInfo) : null;
+      const blocker = githubAutomationsBlocker(repoInfo?.remote);
+      const forge = blocker ? null : resolveForge(repoInfo);
       // Annotated, so the branches are ONE shape rather than a union: the fallback
       // literals always carry `reason`, the cached answer only sometimes does, and the route
       // type is what `contract/src/automations.ts` has to describe.
@@ -3458,9 +3487,7 @@ export function createApp(deps: ServerDeps) {
       // would lock the editor's GitHub trigger off. Only `/api/health` has a latency budget.
       const availability: ForgeAvailability = forge
         ? forge.detectCached() ?? (await forge.detect())
-        : forgeKind
-          ? { available: false, reason: 'GitHub automations need a GitHub remote' }
-          : { available: false, reason: 'No GitHub remote is configured' };
+        : blocker ?? { available: false, reason: 'No GitHub remote is configured' };
       const definitions = automationStore.list();
       const logsById = new Map(definitions.map((definition) => [definition.id, automationStore.logs({ automationId: definition.id, limit: 100 })] as const));
       const timeZone = localTimeZone();
@@ -3636,13 +3663,13 @@ export function createApp(deps: ServerDeps) {
       void (async () => {
         check.status = 'running';
         try {
-          // A `gh`-backed poller may only ever be armed for a GitHub forge (spec
-          // 2026-08-10-forge-provider-adapters, Step 4.6): github.com, or a GitHub Enterprise
-          // host discovery classified as `github`. A GitLab or unknown host refuses exactly as a
-          // remote-less repo always has.
+          // A `gh`-backed poller may only ever be armed where that poller can actually read
+          // (`githubAutomationsBlocker`, spec 2026-08-10-forge-provider-adapters, Step 4.6):
+          // github.com. A GitLab, GitHub Enterprise or unknown host refuses exactly as a
+          // remote-less repo always has — one message for the whole family, unchanged.
           const rawRemote = (await getRepoInfo(project.root))?.remote;
           const remote = parseRemote(rawRemote ?? '');
-          if (!remote || forgeKindOfRemote(rawRemote) !== 'github') throw new Error('No GitHub remote is configured');
+          if (!remote || githubAutomationsBlocker(rawRemote)) throw new Error('No GitHub remote is configured');
           const scheduler = new ProjectAutomationScheduler({
             projectId: project.id,
             timeZone: localTimeZone(),
@@ -6049,16 +6076,16 @@ export function startServer(deps: ServerDeps, port: number): ServerType {
   });
   const coordinator = new SkillsUpdateCoordinator(skillsUpdate, async () =>
     effectiveSkillsAutoUpdate(await loadWorkspaceConfig()));
-  // Every registered project gets a handle (spec 2026-09-14): `github` only when the remote is on
-  // a GitHub forge — github.com, or a GitHub Enterprise host discovery classified as `github`
-  // (spec 2026-08-10-forge-provider-adapters, Step 4.6) — because the handle's poller shells
-  // `gh`. A project on another forge, or with no remote at all, still fires its scheduled
+  // Every registered project gets a handle (spec 2026-09-14): `github` only when the remote is one
+  // the `gh`-backed poller can serve — github.com, and only github.com
+  // (`githubAutomationsBlocker`, spec 2026-08-10-forge-provider-adapters, Step 4.6). A project on
+  // another forge or another GitHub host, or with no remote at all, still fires its scheduled
   // automations; it just never gets a GitHub-event poller.
   const automationProjects = new Map<string, { root: string; github?: { owner: string; repo: string } }>();
   const registerAutomationProject = async (id: string, root: string): Promise<void> => {
     const remote = (await getRepoInfo(root))?.remote;
     const parsed = parseRemote(remote ?? '');
-    const github = parsed && forgeKindOfRemote(remote) === 'github' ? { github: { owner: parsed.owner, repo: parsed.repo } } : {};
+    const github = parsed && !githubAutomationsBlocker(remote) ? { github: { owner: parsed.owner, repo: parsed.repo } } : {};
     automationProjects.set(id, { root, ...github });
   };
   const automationScheduler = new WorkspaceAutomationScheduler({

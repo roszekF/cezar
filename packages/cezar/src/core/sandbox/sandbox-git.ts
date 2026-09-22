@@ -127,3 +127,8 @@ export function withSandboxGitEnv<T extends NodeJS.ProcessEnv | undefined>(
   if (!hardened) return env;
   return { ...process.env, ...env, ...hardened };
 }
+
+/** The host-verified admin dir of a registered worktree — what a sandbox holds `:ro`. */
+export function pinnedAdminDir(worktreePath: string): string | undefined {
+  return registry.get(resolve(worktreePath))?.gitDir;
+}

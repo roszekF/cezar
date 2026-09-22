@@ -8,10 +8,12 @@
  * Env knobs:
  *   FAKE_SBX_STATE    state file (default: <tmpdir>/fake-sbx-state.json)
  *   FAKE_SBX_VERSION  client version to report (default v0.45.0)
- *   FAKE_SBX_BROKEN   "version" → `version` exits 1; "help" → `create --help` lacks --skills
+ *   FAKE_SBX_BROKEN   "version" → `version` exits 1; "help" → `create --help` lacks --skills;
+ *                     "create" → `create` fails
+ *   FAKE_SBX_EXEC_LOG append one JSON line per `exec` (name, cwd, bin, args, the VM env)
  */
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -47,6 +49,7 @@ switch (command) {
       else if (['--pull', '--skills', '--template', '-t', '--memory', '-m'].includes(arg)) i++;
       else if (!arg.startsWith('-')) positional.push(arg);
     }
+    if (process.env.FAKE_SBX_BROKEN === 'create') fail('Not authenticated to Docker');
     const [agent, ...workspaces] = positional;
     name ??= `${agent}-sandbox`;
     const state = load();
@@ -60,16 +63,21 @@ switch (command) {
     break;
   }
   case 'exec': {
+    // Like the real VM: the process sees ONLY what `-e` forwards, plus a minimal base. A bare
+    // `-e NAME` takes the value from this client's own env (sbx 0.45 behavior).
     let cwd = process.cwd();
-    const env = { ...process.env };
+    const env = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' };
     let i = 0;
     for (; i < rest.length; i++) {
       const arg = rest[i];
       if (arg === '-i' || arg === '-t' || arg === '-it' || arg === '--interactive' || arg === '--tty') continue;
       if (arg === '-w' || arg === '--workdir') cwd = rest[++i];
       else if (arg === '-e' || arg === '--env') {
-        const [key, ...value] = rest[++i].split('=');
-        env[key] = value.join('=');
+        const spec = rest[++i];
+        const eq = spec.indexOf('=');
+        if (eq === -1) {
+          if (process.env[spec] !== undefined) env[spec] = process.env[spec];
+        } else env[spec.slice(0, eq)] = spec.slice(eq + 1);
       } else if (arg === '--env-file') {
         for (const line of readFileSync(rest[++i], 'utf8').split('\n')) {
           const eq = line.indexOf('=');
@@ -82,7 +90,11 @@ switch (command) {
     const box = state.sandboxes.find((s) => s.name === name);
     if (!box) fail(`sandbox "${name}" not found`);
     box.status = 'running';
+    box.execs = (box.execs ?? 0) + 1;
     save(state);
+    if (process.env.FAKE_SBX_EXEC_LOG) {
+      appendFileSync(process.env.FAKE_SBX_EXEC_LOG, JSON.stringify({ name, cwd, bin, args, env }) + '\n');
+    }
     const child = spawn(bin, args, { cwd, env: { ...env, SANDBOX_NAME: name }, stdio: 'inherit' });
     child.on('error', (err) => fail(err.message, 127));
     child.on('exit', (code, signal) => process.exit(code ?? (signal ? 128 + 15 : 1)));

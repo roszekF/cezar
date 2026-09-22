@@ -175,7 +175,7 @@ describe('host git on a sandboxed worktree the VM has tampered with', () => {
  */
 describe('git spawn sites', () => {
   const HARDENED = ['agent-config/seed.ts', 'git-worktree.ts', 'server/forge/github.ts', 'server/git-changes.ts', 'skills-remote.ts'];
-  const ROOT_OR_UNRELATED = ['core/backend-detect.ts', 'server/checkout.ts', 'server/git.ts'];
+  const ROOT_OR_UNRELATED = ['core/backend-detect.ts', 'core/sandbox/run-policy.ts', 'server/checkout.ts', 'server/git.ts'];
 
   it('are all classified, and the worktree-capable ones are hardened', () => {
     const src = fileURLToPath(new URL('../..', import.meta.url));

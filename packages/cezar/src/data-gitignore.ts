@@ -27,6 +27,7 @@ export const DATA_GITIGNORE_ENTRIES = [
   'attachments/',
   'worktrees/',
   'tmp/', // per-run agent temp directories (#785)
+  'sandbox/', // per-run dirs a Docker Sandbox mounts (spec 2026-09-22-docker-sandboxes)
   'drafts/', // unsent composer text + pasted screenshots (#939) — never in git history
   'todos.json',
   'todos.json.tmp',

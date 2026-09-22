@@ -10,7 +10,21 @@ import { dirname, join } from 'node:path';
  * best-effort: the handoff is a journal, never a reason to fail a run.
  */
 
+/**
+ * A sandboxed run's own directory (spec 2026-09-22-docker-sandboxes): the one part of
+ * `.ai/cezar/` its sandbox mounts, so the journal lives here instead of `runs/`, which holds
+ * every other run's files. Created by `RunManager.startRun` before the journal is seeded; its
+ * existence is what marks the run's journal as relocated, so every reader and writer below
+ * agrees without a registry — and without the sandbox being able to decide it, since the VM
+ * never sees `.ai/cezar/sandbox/` itself, only this one run's directory inside it.
+ */
+export function sandboxRunDir(dataDir: string, runId: string): string {
+  return join(dataDir, 'sandbox', runId);
+}
+
 export function handoffPath(dataDir: string, runId: string): string {
+  const scoped = sandboxRunDir(dataDir, runId);
+  if (existsSync(scoped)) return join(scoped, 'handoff.md');
   return join(dataDir, 'runs', `${runId}.handoff.md`);
 }
 

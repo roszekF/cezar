@@ -9,11 +9,20 @@ import {
   type AskRequest,
 } from '../core/ask.ts';
 import { AUTO_END_DELAY_MS, type AgentSession } from '../core/claude-cli-runner.ts';
-import { hostLauncher } from '../core/process-launcher.ts';
+import { hostLauncher, type ProcessLauncher } from '../core/process-launcher.ts';
+import { sandboxLauncher, sandboxNameFor, type SandboxAgent } from '../core/sandbox/docker-sbx.ts';
+import {
+  prepareRunSandbox,
+  reconcileSandboxes,
+  sandboxAgentSpec,
+  sandboxForwardKeys,
+  sandboxTmpEnv,
+  stopRunSandbox,
+} from '../core/sandbox/run-sandbox.ts';
 import { onUsage, registerRunProcess, unregisterRunProcess, type ProcessUsage } from '../core/process-usage.ts';
 import { parseUsageLimit } from '../core/usage-limit.ts';
 import { createRunner } from '../core/runner-factory.ts';
-import type { RunnerId } from '../core/agent-runner.ts';
+import type { AgentRunSpec, RunnerId } from '../core/agent-runner.ts';
 import { modelConflictsWithRunner } from '../core/model-presets.ts';
 import { AGENT_MODELS_LOCKED_ERROR, agentModelsLocked } from '../core/agent-model-policy.ts';
 import {
@@ -27,6 +36,7 @@ import {
   appendHandoffHeartbeat,
   followupsEnabled,
   handoffPath,
+  sandboxRunDir,
   readHandoff,
   seedHandoffFile,
 } from '../handoff.ts';
@@ -389,6 +399,10 @@ interface ActiveRun {
   };
 }
 
+/** Opens the first session in a recreated sandbox, whose predecessor held the old session. */
+const SANDBOX_RESTART_NOTE =
+  'Note from cezar: this task runs in a Docker Sandbox that had to be recreated, so your previous session could not be restored. Read your handoff journal ($CEZ_HANDOFF_FILE) and the git log of this branch to pick up where the task left off.';
+
 /** Safety cap on autonomous auto-continues per run — stops a stuck agent from nudging forever.
  *  Exported so the tests assert against the real cap instead of restating `40`. */
 export const MAX_AUTO_CONTINUES = 40;
@@ -542,6 +556,10 @@ export interface StartRunInput {
    *  user — turn-ends auto-continue until the agent signals done or the safety
    *  cap is hit. No "needs you" is ever raised. */
   autonomous?: boolean;
+  /** Run every agent and check step inside the run's own Docker Sandbox (spec
+   *  2026-09-22-docker-sandboxes). Validated by the route (`sandboxRunRefusal`); persisted on
+   *  the record, which every later spawn reads. */
+  sandbox?: boolean;
   /** Follow-up inbox generation (spec 007, #444). Omitted means enabled for
    *  compatibility; the handoff journal runs either way. */
   generateFollowups?: boolean;
@@ -1071,6 +1089,79 @@ export class RunManager {
     }
   }
 
+  // ---- Docker Sandboxes (spec 2026-09-22-docker-sandboxes) ------------------------------------
+
+  /**
+   * The spec a step spawns with, moved into the run's sandbox when the RECORD says so — the one
+   * gate every agent spawn (first step, later steps, Continue, restart recovery, auto-resume)
+   * passes through, so none of them can start a sandboxed run's agent on the host. A string is
+   * a step error for the run log (sign-in expired, sbx failed, unsupported backend).
+   */
+  private async sandboxSpawnSpec(runId: string, backend: RunnerId, spec: AgentRunSpec): Promise<AgentRunSpec | string> {
+    const record = this.store.getRun(runId);
+    if (!record?.sandbox) return spec;
+    let created: boolean;
+    try {
+      ({ created } = await prepareRunSandbox({
+        repoRoot: this.repoRoot,
+        dataDir: this.dataDir,
+        record,
+        backend,
+        memoryMb: this.semaphore.memoryLimitMb() ?? undefined,
+      }));
+    } catch (err) {
+      return `sandbox: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    if (created) {
+      this.store.updateRun(runId, { sandbox: { ...record.sandbox, createdAt: new Date().toISOString(), removedAt: undefined } });
+      this.store.appendEvent(runId, { type: 'lifecycle', message: `sandbox ${record.sandbox.name} created` });
+    }
+    const boxed = sandboxAgentSpec(spec, {
+      name: record.sandbox.name,
+      dataDir: this.dataDir,
+      runId,
+      backend: backend as SandboxAgent,
+      created,
+    });
+    if (!boxed.restartedSession) return boxed.spec;
+    // The VM that held the session is gone (removed by hand, reclaimed, host rebuilt), and the
+    // session lived only inside it. Say so, and hand the new session the journal to resume from.
+    this.store.appendEvent(runId, {
+      type: 'lifecycle',
+      message: 'sandbox was recreated — the previous agent session is gone, starting a fresh one from the handoff journal',
+    });
+    return {
+      ...boxed.spec,
+      userPrompt: `${SANDBOX_RESTART_NOTE}\n\n${boxed.spec.userPrompt}`,
+    };
+  }
+
+  /** The launcher and env a check step runs with: the host for an ordinary run, the run's
+   *  sandbox for a sandboxed one (spec Q4 — a check the agent wrote must not run on the host). */
+  private async checkStepLauncher(
+    runId: string,
+  ): Promise<{ launcher: ProcessLauncher; env: NodeJS.ProcessEnv } | string> {
+    const record = this.store.getRun(runId);
+    if (!record?.sandbox) return { launcher: hostLauncher, env: process.env };
+    const backend = record.runner ?? (await loadConfig(this.repoRoot)).defaultRunner;
+    try {
+      await prepareRunSandbox({ repoRoot: this.repoRoot, dataDir: this.dataDir, record, backend });
+    } catch (err) {
+      return `sandbox: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    return {
+      launcher: sandboxLauncher(record.sandbox.name, sandboxForwardKeys()),
+      env: { ...this.agentEnv(runId, false), ...sandboxTmpEnv(this.dataDir, runId), CEZ_TODOS_FILE: '' },
+    };
+  }
+
+  /** A sandboxed run cannot reach the cockpit, so it is never told about `cez task` / `cez automation`. */
+  private dropUnreachablePrompts(runId: string, state: ActiveRun): void {
+    if (!this.store.getRun(runId)?.sandbox) return;
+    state.dispatchPrompt = undefined;
+    state.automationsPrompt = undefined;
+  }
+
   /** Env the spawned claude gets so the agent can find its handoff file and
    *  the global inbox (spec 007; the inbox only when the run opted in).
    *
@@ -1168,7 +1259,9 @@ export class RunManager {
       // The global inbox is the ceiling on the per-run flag (#471). Enforced here rather than
       // at the HTTP route because `cezar run`, the inbox's own "▶ Run" and variants all reach
       // startRun directly — a route-level gate would leave those writing todos.json.
-      generateFollowups: followupsEnabled() ? input.generateFollowups : false,
+      // A sandboxed run cannot reach the shared `.ai/cezar/todos.json` (spec
+      // 2026-09-22-docker-sandboxes): the VM mounts only its own run directory.
+      generateFollowups: followupsEnabled() && !input.sandbox ? input.generateFollowups : false,
       // Persist autonomy on the record (#489) so the terminal review gate
       // (`settleSuccess`) and the group-pick winner-park can honor it — mid-run
       // auto-nudge reads `input.autonomous` (`execute`), but the record is the
@@ -1184,6 +1277,13 @@ export class RunManager {
     // Persist the full definition so a queued run survives a restart (#367) —
     // ad-hoc "(planned)" chains exist nowhere else to re-resolve from.
     this.store.updateRun(run.id, { workflowDef: workflow });
+    // The sandbox choice lives on the record, like autonomy. The run directory is created NOW —
+    // before the handoff journal is seeded — because its existence is what relocates the journal
+    // into the one `.ai/cezar/` directory the VM mounts (`handoffPath`).
+    if (input.sandbox) {
+      mkdirSync(sandboxRunDir(this.dataDir, run.id), { recursive: true });
+      this.store.updateRun(run.id, { sandbox: { provider: 'docker-sbx', name: sandboxNameFor(run.id) } });
+    }
     // The run's place in a dispatch tree (spec 2026-09-10-dispatch), written the way
     // automation provenance is (`automations/task-template.ts`): an update straight after create,
     // rather than a tenth key on `createRun`'s parameter object. Persisting it here — not merely
@@ -1553,6 +1653,9 @@ export class RunManager {
    * Call once, before the server starts taking requests.
    */
   async recover(): Promise<void> {
+    // Docker Sandboxes (spec 2026-09-22-docker-sandboxes): re-arm host-git hardening for every
+    // sandboxed worktree and stop crash-leftover VMs BEFORE anything below resumes a run.
+    await reconcileSandboxes(this.repoRoot, this.store.listRuns()).catch(() => undefined);
     const live = this.store
       .listRuns()
       .filter((r) => ['queued', 'waiting', 'running'].includes(r.status))
@@ -1720,6 +1823,10 @@ export class RunManager {
     // there is no keep-count to respect and nothing left to recover from it. A
     // Continue (or an auto-resume) re-creates it through `agentEnv`.
     removeAgentTmpDir(this.dataDir, runId);
+    // A sandboxed run's VM stops on the same terminal transition (spec Q2): state is kept for a
+    // Continue, RAM is not. Stopping is also what ends an inner agent a cancel only detached
+    // from — killing the `sbx exec` client leaves it running (spike check c).
+    stopRunSandbox(this.store.getRun(runId));
   }
 
   // ---- task dispatch (spec 2026-09-10-dispatch) ----------------------------------------------
@@ -3390,6 +3497,7 @@ export class RunManager {
     // a run that quietly degrades into an ordinary task.
     this.prepareDispatchSession(runId, state);
     this.prepareAutomationsSession(state);
+    this.dropUnreachablePrompts(runId, state);
 
     this.store.updateRun(runId, {
       status: 'running',
@@ -3661,8 +3769,7 @@ export class RunManager {
     const contextualOpeningPrompt = portableContext
       ? `${portableContext}\n\n---\n\n## New user instruction\n${openingPrompt}`
       : openingPrompt;
-    const session = runner.startSession(
-      {
+    const continueSpec = await this.sandboxSpawnSpec(runId, continueBackend, {
         // The Continue step is a fresh agent session on the same run — the
         // run's extra system prompt (already resolved at execute time and
         // echoed on the record) rides along with the handoff contract, and a
@@ -3690,7 +3797,13 @@ export class RunManager {
         sessionId,
         resume: sessionId !== undefined,
         timeoutMs: 0,
-      },
+      });
+    if (typeof continueSpec === 'string') {
+      failBeforeSpawn(continueSpec);
+      return;
+    }
+    const session = runner.startSession(
+      continueSpec,
       onEvent,
       { onUiEvent: (event) => this.handleRunnerUiEvent(runId, state, sink, event) },
     );
@@ -3904,6 +4017,7 @@ export class RunManager {
     // twin is in `runContinuation`.
     this.prepareDispatchSession(runId, state);
     this.prepareAutomationsSession(state);
+    this.dropUnreachablePrompts(runId, state);
     const retriesUsed = new Map<string, number>();
     let checkFailure: string | null = null;
     let runError: string | null = null;
@@ -4001,7 +4115,11 @@ export class RunManager {
         continue;
       }
 
-      const { ok, output } = await this.runCheckStep(state, step, emit);
+      const checkLaunch = await this.checkStepLauncher(runId);
+      const { ok, output } =
+        typeof checkLaunch === 'string'
+          ? { ok: false, output: checkLaunch }
+          : await this.runCheckStep(state, step, emit, checkLaunch);
       if (state.cancelled) break;
       if (ok) {
         this.finishStep(runId, step.id, 'done', undefined, emit);
@@ -4437,9 +4555,7 @@ export class RunManager {
     let session: AgentSession;
     state.currentStepId = step.id;
     this.beginUsageInvocation(runId, state, step.id);
-    try {
-      session = runner.startSession(
-        {
+    const stepSpec = await this.sandboxSpawnSpec(runId, stepBackend, {
           // Skill body, then the dispatch prompt (spec 2026-09-10-dispatch — how a task dispatches,
           // reports and asks), then the automations prompt (spec 2026-09-13-automations-from-prompt
           // — how a task creates a GitHub automation), then the run's extra
@@ -4480,7 +4596,11 @@ export class RunManager {
           // closed unanswered settles as `failed` with a Continue button (see
           // the `askPark` branch in `execute`), never as a run stuck `waiting`.
           timeoutMs: interactive ? 0 : undefined,
-        },
+        });
+    if (typeof stepSpec === 'string') return stepSpec;
+    try {
+      session = runner.startSession(
+        stepSpec,
         onEvent,
         {
           // Ordinary intermediate sessions are closed explicitly at turn-end
@@ -5149,12 +5269,13 @@ export class RunManager {
     state: ActiveRun,
     step: WorkflowStepDef,
     emit: (event: { type: string; stepId?: string; [k: string]: unknown }) => void,
+    launch: { launcher: ProcessLauncher; env: NodeJS.ProcessEnv } = { launcher: hostLauncher, env: process.env },
   ): Promise<{ ok: boolean; output: string }> {
     const command = step.command as string;
     emit({ type: 'note', stepId: step.id, message: `$ ${command}` });
     return new Promise((resolve) => {
       // Check steps run in the same cwd as the agent steps — the worktree.
-      const child = hostLauncher.spawn('bash', ['-lc', command], { cwd: state.cwd, env: process.env });
+      const child = launch.launcher.spawn('bash', ['-lc', command], { cwd: state.cwd, env: launch.env });
       state.interrupt = () => child.kill('SIGTERM');
 
       let output = '';

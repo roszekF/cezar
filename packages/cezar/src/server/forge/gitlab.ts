@@ -1,5 +1,14 @@
 import { z } from 'zod';
-import { createSwrCache, deleteKeysWithPrefix, fetchBoundedPages, isNotFound, registerProjectCacheEvictor, runCli } from './cli.ts';
+import {
+  createSwrCache,
+  deleteKeysWithPrefix,
+  execTool,
+  fetchBoundedPages,
+  isNotFound,
+  registerProjectCacheEvictor,
+  runCli,
+} from './cli.ts';
+import { PUSH_TIMEOUT_MS, preparePublish, tail } from './draft-pr.ts';
 import {
   GH_CHECKS_MAX,
   GH_SEARCH_MAX,
@@ -13,6 +22,8 @@ import {
 import type { ParsedRemote } from './index.ts';
 import { FORGE_PR_DIFF_FILE_CAP, FORGE_PR_DIFF_JSON_CAP, FORGE_PR_PATCH_CAP } from './limits.ts';
 import type {
+  DraftPrInput,
+  DraftPrOutcome,
   ForgeAvailability,
   ForgeChecksData,
   ForgeChecksGlyph,
@@ -43,7 +54,8 @@ import type {
  * Step 3.5 adds `prDiff` — bounded file changes, forge-neutral caps (`forge/limits.ts`). Step 3.6
  * adds `searchItems` — the open-only list tier's escape hatch into every state, mirroring GitHub's
  * `searchGithubItems` (#730). Step 3.7 adds `viewUrl` — GitLab's own `/-/` path grammar, based off
- * `gitlabWebBase` (the cached `web_url`, falling back to `origin` + `path`). `refStatus` and the
+ * `gitlabWebBase` (the cached `web_url`, falling back to `origin` + `path`). Step 4.1 adds
+ * `createPR` — draft merge requests from the review gate. `refStatus` and the
  * merge-panel capabilities (`prMergeState`, `mergePR`) stay absent for good (spec Non-goals) — the
  * routes already degrade in the payload.
  */
@@ -1052,6 +1064,74 @@ async function searchGitlabItems(
   }
 }
 
+// ---- draft merge request creation (review gate, Step 4.1) --------------------
+// Mirrors GitHub's `createDraftPr` step for step: the shared prelude (`./draft-pr.ts` — final
+// autosave, conflicted-worktree refusal, dry run, remote check, push, base branch, body), then
+// `glab mr create --draft` in the task worktree (glab picks the project up from the worktree's
+// remote). Every failure maps to a one-line human error. Never throws.
+//
+// No `--no-editor`: in glab 1.118 it means "prompt instead of opening an editor", i.e. it adds a
+// prompt; `--description` + `--yes` already leave nothing to ask.
+
+/** The MR URL glab prints, anchored to THIS instance's host (a self-managed instance may carry a
+ *  port and serve projects under subgroups or a path prefix). */
+function mrUrlRe(host: string): RegExp {
+  const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`https?://${escaped}(?::\\d+)?/\\S+?/-/merge_requests/\\d+`);
+}
+
+/** The instance's web host (with port when it has one): from the project web root, else the
+ *  remote's host. */
+function gitlabWebHost(repoRoot: string, parsed: ParsedRemote): string {
+  const base = gitlabWebBase(repoRoot, parsed);
+  if (base) {
+    try {
+      return new URL(base).host;
+    } catch {
+      // fall through to the remote's host
+    }
+  }
+  return parsed.host;
+}
+
+async function createGitlabDraftMr(repoRoot: string, parsed: ParsedRemote, input: DraftPrInput): Promise<DraftPrOutcome> {
+  const prelude = await preparePublish(input);
+  if (prelude.kind === 'error') return { ok: false, error: prelude.error };
+  if (prelude.kind === 'dryRun') {
+    const base = gitlabWebBase(repoRoot, parsed) ?? 'https://gitlab.com/demo/demo';
+    return { ok: true, url: `${base}/-/merge_requests/777`, dryRun: true };
+  }
+  const { worktree, branch, base, title, body } = prelude;
+
+  const targetArgs = base ? ['--target-branch', base] : [];
+  const mr = await execTool(
+    ['mr', 'create', '--draft', '--source-branch', branch, ...targetArgs, '--title', title, '--description', body, '--yes'],
+    worktree,
+    'glab',
+    PUSH_TIMEOUT_MS,
+  );
+  if (!mr.ok) {
+    if (mr.notFound) {
+      return { ok: false, error: 'glab not found — install the GitLab CLI and run `glab auth login`, or merge the branch locally' };
+    }
+    if (/\b40[13]\b|not logged in|authentication/i.test(mr.stderr)) {
+      const host = parsed.host;
+      return {
+        ok: false,
+        error: `glab is not authenticated for ${host} — run \`glab auth login --hostname ${host}\`, or merge the branch locally`,
+      };
+    }
+    return { ok: false, error: `glab mr create failed — ${tail(mr.stderr) || 'unknown error'}` };
+  }
+
+  // glab prints the MR URL on stdout; accept stderr too, as the GitHub path does.
+  const match = mrUrlRe(gitlabWebHost(repoRoot, parsed)).exec(`${mr.stdout}\n${mr.stderr}`);
+  if (!match) {
+    return { ok: false, error: 'glab mr create finished but printed no merge request URL — check the GitLab project' };
+  }
+  return { ok: true, url: match[0], dryRun: false };
+}
+
 /** `parsed` feeds `listAll`'s `repo` field and `viewUrl`'s origin + path fallback (Step 3.7). */
 export function createGitlabDriver(repoRoot: string, parsed: ParsedRemote): ForgeDriver {
   return {
@@ -1077,8 +1157,8 @@ export function createGitlabDriver(repoRoot: string, parsed: ParsedRemote): Forg
     // The open-only list tier's escape hatch into every state (Step 3.6).
     searchItems: (kind, query, opts) => searchGitlabItems(repoRoot, kind, query, opts?.limit),
 
-    // Step 4.1 implements draft merge requests.
-    createPR: async () => ({ ok: false, error: 'Merge request creation is not implemented yet for GitLab' }),
+    // Draft merge request from the review gate (Step 4.1) — mirrors GitHub's `createDraftPr`.
+    createPR: (input) => createGitlabDraftMr(repoRoot, parsed, input),
 
     // The branch's open/merged/closed merge request, or null when none (or glab is down).
     prStatus: (branch) => fetchGitlabPrStatus(repoRoot, branch),

@@ -121,6 +121,31 @@ describe('a reference cezar changes itself is forgotten, not waited out', () => 
     }
   });
 
+  it('opens a draft merge request for a GitLab-remote worktree (dry run fakes the MR on the instance)', async () => {
+    // Step 4.1 (spec 2026-08-10-forge-provider-adapters): the GitLab driver resolves from the
+    // worktree's remote and answers with its own `/-/merge_requests/N` URL grammar.
+    const worktree = mkdtempSync(join(tmpdir(), 'cez-refinvalidate-gitlab-'));
+    execFileSync('git', ['init', '-b', 'cez/mr1'], { cwd: worktree });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: worktree });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: worktree });
+    execFileSync('git', ['commit', '--allow-empty', '-m', 'work'], { cwd: worktree });
+    execFileSync('git', ['remote', 'add', 'origin', 'git@gitlab.com:acme/demo.git'], { cwd: worktree });
+    const run = store.createRun({ title: 'Ship it on GitLab', task: 'ship it', workflow: 'quick-task', steps: [] });
+    store.updateRun(run.id, { status: 'review', worktreePath: worktree, branch: 'cez/mr1' });
+
+    try {
+      const res = await apiRequest(app, `/api/v1/runs/${run.id}/pr`, {
+        method: 'POST',
+        headers: { origin: 'http://127.0.0.1:4321' },
+      });
+      expect(res.status).toBe(201);
+      expect(await res.json()).toEqual({ url: 'https://gitlab.com/acme/demo/-/merge_requests/777', dryRun: true });
+      expect(store.getRun(run.id)?.pullRequestUrl).toBe('https://gitlab.com/acme/demo/-/merge_requests/777');
+    } finally {
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the pre-seam draft-PR path for a worktree with no forge remote (dry run fakes the PR)', async () => {
     const worktree = mkdtempSync(join(tmpdir(), 'cez-refinvalidate-noforge-'));
     execFileSync('git', ['init', '-b', 'cez/def'], { cwd: worktree });

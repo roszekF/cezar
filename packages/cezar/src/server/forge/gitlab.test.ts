@@ -205,11 +205,12 @@ describe('GitLab driver — skeleton members (later steps implement them)', () =
     vi.unstubAllEnvs();
   });
 
-  it('still refuses merge-request creation (Step 4.1 implements it)', async () => {
+  it('refuses merge-request creation for a run with no worktree/branch (Step 4.1; the rest lives in gitlab-draft-mr.test.ts)', async () => {
     const driver = createGitlabDriver(freshRoot(), parsed());
     expect(
       await driver.createPR({ repoRoot: '/repo', run: {} as RunRecord, handoffText: '' }),
-    ).toEqual({ ok: false, error: 'Merge request creation is not implemented yet for GitLab' });
+    ).toEqual({ ok: false, error: 'this task has no worktree/branch to publish' });
+    expect(execFileMock).not.toHaveBeenCalled();
   });
 
   it('leaves the optional capabilities absent, so the routes degrade in the payload', () => {

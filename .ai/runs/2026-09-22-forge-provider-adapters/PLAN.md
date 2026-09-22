@@ -34,7 +34,7 @@
 | 3 | 3.7 | GitLab viewUrl | dispatch:cheap | done | d7db20ab |
 | 3 | 3.8 | Cockpit forge label, icon and copy from health.forge.kind | dispatch | done | 41d044a5 |
 | 3 | 3.9 | Forge-neutral task reference chips in the cockpit | dispatch | done | bd6f6668 |
-| 4 | 4.1 | GitLab draft merge request creation | dispatch:capable | todo | — |
+| 4 | 4.1 | GitLab draft merge request creation | dispatch:capable | done | pending |
 | 4 | 4.2 | Clone from a GitLab remote | dispatch:capable | todo | — |
 | 4 | 4.3 | Host tooling, agent env and redaction for glab | dispatch | todo | — |
 | 4 | 4.4 | Run bookkeeping learns GitLab URL shapes | dispatch | todo | — |

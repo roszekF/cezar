@@ -1,19 +1,19 @@
 # Handoff — 2026-09-22-forge-provider-adapters
 
-**Last updated:** 2026-09-22T15:16:05Z
+**Last updated:** 2026-09-22T16:25:02Z
 **Branch:** feat/forge-provider-adapters (fork roszekF/cezar)
 **PR:** https://github.com/roszekF/cezar/pull/1 (draft)
-**Current phase/step:** Phase 3 Step 3.6 (paused for operator review at the ~20-Step safety checkpoint)
-**Last commit:** 927f232b — test(forge): freeze the clock in the GitLab dry-run list test
+**Current phase/step:** Phase 4 Step 4.1
+**Last commit:** b9f7d22b — fix(forge): name GitLab in the merge-state fallback
 
 ## What just happened
-- Phase 3 read paths 3.1–3.5 landed (GitLab detect, lists, comments/timeline, checks, prStatus, diffs) + 3.2-review-fix. Checkpoint 4 green (1 unrelated load flake). Run paused for operator review per the executor-dispatch safety checkpoint (20 plan rows done).
+- Phase 3 complete (3.1–3.9 + 3 review-fix rows): GitLab read paths, search, web links, forge-aware cockpit copy, forge-neutral task chips. Checkpoint 5 green with a real-browser pass on a dry-run GitLab project.
 
 ## Next concrete action
-- Resume with om-auto-continue-pr-loop 1 (fork roszekF/cezar) → Step 3.6 GitLab searchItems, then 3.7 viewUrl, 3.8 cockpit copy, 3.9 task chips, Phase 4.
+- Implement Step 4.1 — GitLab draft merge request creation (glab mr create --draft …), mirroring createDraftPr.
 
 ## Blockers / open questions
-- none technical. Transitional state on the branch: GitHub-event automations still see a GitLab driver as "available" until Step 4.6; GitLab viewUrl returns null until 3.7; GitLab draft MR returns an error until 4.1.
+- none. Pushes go over HTTPS with gh credentials (SSH agent stopped signing): git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push https://github.com/roszekF/cezar.git feat/forge-provider-adapters
 
 ## Environment caveats
 - Dev runtime runnable: yes (npm ci done in the worktree)

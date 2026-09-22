@@ -40,3 +40,15 @@
 
 ## 2026-09-22T15:16:05Z — blocker: safety checkpoint — paused for operator review
 - 20 plan rows done (12 plan Steps of Phases 1–2, 5 of Phase 3, 3 review-fix rows). Executor-dispatch safety rule: stop after ~20 consecutive Steps and let the user review. PR stays draft, Status: in-progress; lock released. Resume: om-auto-continue-pr-loop 1.
+
+## 2026-09-22T16:25:02Z — run resumed after operator review
+- Operator said "continue". Lock reclaimed.
+
+## 2026-09-22T16:25:02Z — push transport changed
+- The gnome-keyring SSH agent stopped signing ("communication with agent failed"); pushes to roszekF/cezar now use HTTPS with gh's credentials (same fork, same account). Executor rules updated.
+
+## 2026-09-22T16:25:02Z — checkpoint 5 (Phase 3 close: 3.6..3.9 + 3.8-review-fix + 3.1-review-fix)
+- typecheck, npm test (7 539), test:unit green. Real-browser pass on a dry-run GitLab project found two copy gaps, fixed as 3.8-review-fix (b195fece) and 3.1-review-fix (b9f7d22b); re-shot screenshots attached.
+- e2e subset: failures match main except harness socket resets, which main reproduces too → pre-existing; closes the checkpoint-2 composer-defaults question.
+- Decision: Step 4.4 also makes the hand-to-agent wording forge-aware ("Fix GitLab issue #N", "Address GitLab merge request !N") with task-refs.ts learning it in the same commit.
+- Delegations: 3.6+3.7 (sonnet), 3.8 (sonnet), 3.9 (sonnet), 3.8-review-fix (sonnet).

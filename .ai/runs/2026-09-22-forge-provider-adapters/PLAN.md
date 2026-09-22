@@ -30,10 +30,10 @@
 | 3 | 3.3 | GitLab listComments with timeline events | dispatch | done | bbd3f755 |
 | 3 | 3.4 | GitLab listChecks and prStatus | dispatch | done | c9217a48 |
 | 3 | 3.5 | GitLab prDiff with forge-neutral caps | dispatch | done | c5978f60 |
-| 3 | 3.6 | GitLab searchItems | dispatch:cheap | done | pending |
-| 3 | 3.7 | GitLab viewUrl | dispatch:cheap | done | pending |
-| 3 | 3.8 | Cockpit forge label, icon and copy from health.forge.kind | dispatch | done | pending |
-| 3 | 3.9 | Forge-neutral task reference chips in the cockpit | dispatch | done | pending |
+| 3 | 3.6 | GitLab searchItems | dispatch:cheap | done | 172419f5 |
+| 3 | 3.7 | GitLab viewUrl | dispatch:cheap | done | d7db20ab |
+| 3 | 3.8 | Cockpit forge label, icon and copy from health.forge.kind | dispatch | done | 41d044a5 |
+| 3 | 3.9 | Forge-neutral task reference chips in the cockpit | dispatch | done | bd6f6668 |
 | 4 | 4.1 | GitLab draft merge request creation | dispatch:capable | todo | — |
 | 4 | 4.2 | Clone from a GitLab remote | dispatch:capable | todo | — |
 | 4 | 4.3 | Host tooling, agent env and redaction for glab | dispatch | todo | — |
@@ -44,8 +44,8 @@
 | 1 | 1.7-review-fix | Type the driver-stub test payloads explicitly | inline | done | 5f7bae12 |
 | 1 | 1.8-review-fix | Keep the pre-seam draft-PR path when no forge resolves | inline | done | 7ec3ab5f |
 | 3 | 3.2-review-fix | Freeze the clock in the GitLab dry-run list test | inline | done | 927f232b |
-| 3 | 3.8-review-fix | Finish forge-aware copy across the forge tab | dispatch | done | pending |
-| 3 | 3.1-review-fix | Name GitLab in the merge-state fallback | inline | done | pending |
+| 3 | 3.8-review-fix | Finish forge-aware copy across the forge tab | dispatch | done | b195fece |
+| 3 | 3.1-review-fix | Name GitLab in the merge-state fallback | inline | done | b9f7d22b |
 
 ## Goal
 

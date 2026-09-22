@@ -165,7 +165,7 @@ All changes are additive.
   ```ts
   sandbox?: {
     provider: 'docker-sbx';
-    state: 'available' | 'unsupported-version' | 'disabled';
+    state: 'available' | 'unsupported-version';
     version?: string;
     backends: Array<'claude' | 'codex'>;
   }
@@ -176,7 +176,7 @@ All changes are additive.
   - Sign-in state isn't probed here, because probing it would start the daemon. It surfaces when a sandboxed run starts.
 - **Env contract** (`.env.example` and the README env table in the same commit, per AGENTS.md):
   - `CEZ_SBX_BIN`: path to the `sbx` binary, same semantics as `CEZ_CLAUDE_BIN`.
-  - `CEZ_SANDBOX`: when unset, `sbx` is auto-detected and each run opts in. `0` hides the toggle and refuses `sandbox: true`; it's the kill switch for shared boxes. Any other value behaves as unset.
+  - `CEZ_SANDBOX`: when unset, `sbx` is auto-detected and each run opts in. `0` skips detection entirely, so `capabilities.sandbox` is absent, the toggle is hidden and `sandbox: true` is refused; it's the kill switch for shared boxes. Any other value behaves as unset.
 
 ## 📝 Zero config
 
@@ -272,7 +272,7 @@ Each phase ships as its own PR and leaves cezar working.
 
 1. `detect()` parses `sbx version --json`, with the minimum version and `--help` probes. Tested against recorded outputs.
 2. `packages/cezar/scripts/fake-sbx.mjs`: `version`, `ls`, `create`, `exec` (runs locally in `-w`, honoring `--env-file`), `stop` and `rm`, over a JSON state file. Tests point `CEZ_SBX_BIN` at it.
-3. The optional `capabilities.sandbox`, `CEZ_SBX_BIN` and `CEZ_SANDBOX` in `.env.example` and the README. Contract-parity and health tests cover the field absent, available, unsupported and disabled.
+3. The optional `capabilities.sandbox`, `CEZ_SBX_BIN` and `CEZ_SANDBOX` in `.env.example` and the README. Contract-parity and health tests cover the field absent, available, unsupported, and absent under `CEZ_SANDBOX=0`.
 
 ### Phase 4: sandboxed runs, server-side
 

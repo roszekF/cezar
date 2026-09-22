@@ -1,6 +1,6 @@
 import type { RepoInfo } from '../git.ts';
 import { createGithubDriver } from './github.ts';
-import type { ForgeDriver, ForgeKind, ForgeListData, ForgeListOptions, ForgeSearchData } from './types.ts';
+import type { ForgeCommentsData, ForgeDriver, ForgeKind, ForgeListData, ForgeListOptions, ForgeSearchData } from './types.ts';
 
 /**
  * Forge resolution (cockpit-ui redesign spec §"Forge-driver seam"): map the
@@ -121,6 +121,22 @@ export async function searchForgeItems(
   if (!forge) return { available: false, reason: NO_FORGE_REASON, items: [] };
   if (!forge.searchItems) return { available: false, reason: `Search is not supported for this ${forge.kind} remote`, items: [] };
   return forge.searchItems(kind, query, opts);
+}
+
+/**
+ * The `GET /api/github/comments/:kind/:number` thread through the driver seam (#499, #525, spec
+ * 2026-08-10-forge-provider-adapters). A null forge, or one without `listComments`, degrades in the
+ * payload — the route never 5xxs over a missing capability.
+ */
+export async function listForgeComments(
+  forge: ForgeDriver | null,
+  kind: 'issue' | 'pr',
+  number: number,
+  opts: { refresh?: boolean },
+): Promise<ForgeCommentsData> {
+  if (!forge) return { available: false, reason: NO_FORGE_REASON, comments: [] };
+  if (!forge.listComments) return { available: false, reason: `Comments are not supported for this ${forge.kind} remote`, comments: [] };
+  return forge.listComments(kind, number, opts);
 }
 
 export type { ForgeDriver, ForgeAvailability, ForgeItem, ForgeKind, ForgePrStatus, ForgeRefKind } from './types.ts';

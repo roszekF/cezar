@@ -186,13 +186,14 @@ import { isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
 import { browseDirectory, isInsideBrowseRoot, isLexicallyInsideBrowseRoot, resolveBrowseRoot } from './fs-browse.ts';
 import {
+  listForgeComments,
   listForgeItems,
   parseRemote,
   resolveForge,
   searchForgeItems,
   type ForgeAvailability,
 } from './forge/index.ts';
-import { fetchGithubChecks, fetchGithubComments, fetchGithubPrDiff, fetchGithubRefStatus, forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, GithubPrNotFoundError, GH_CHECKS_MAX, GH_SEARCH_MAX, GH_REF_STATUS_MAX } from './github.ts';
+import { fetchGithubChecks, fetchGithubPrDiff, fetchGithubRefStatus, forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, GithubPrNotFoundError, GH_CHECKS_MAX, GH_SEARCH_MAX, GH_REF_STATUS_MAX } from './github.ts';
 import { ensureLaunchKey } from './launch-key.ts';
 import { openInTerminal } from './open-in-terminal.ts';
 import { agentCliRunner, detectOpenTargets, openFileInDefaultApp, openInApp } from './open-in-app.ts';
@@ -5287,8 +5288,9 @@ export function createApp(deps: ServerDeps) {
         number: c.req.param('number'),
       });
       if (!parsed.success) return c.json({ error: 'invalid kind or number' }, 400);
+      const forge = resolveForge(await getRepoInfo(repoRoot));
       return c.json(
-        await fetchGithubComments(repoRoot, parsed.data.kind, parsed.data.number, c.req.valid('query').refresh === '1'),
+        await listForgeComments(forge, parsed.data.kind, parsed.data.number, { refresh: c.req.valid('query').refresh === '1' }),
       );
     })
 

@@ -2819,6 +2819,9 @@ export function createGithubDriver(repoRoot: string, repoRef: GithubRepoRef | nu
     // closed or merged item.
     searchItems: (kind, query, opts) => searchGithubItems(repoRoot, kind, query, opts?.limit),
 
+    // The conversation thread for one issue/PR (#499, #525) — byte-identical payload.
+    listComments: (kind, number, opts) => fetchGithubComments(repoRoot, kind, number, !!opts?.refresh),
+
     prDiff: (number, opts) => fetchGithubPrDiff(repoRoot, number, opts?.refresh),
 
     createPR: (input) => createDraftPr(input),

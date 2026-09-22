@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RepoInfo } from '../git.ts';
 import {
   forgeKindOfRemote,
+  listForgeComments,
   listForgeItems,
   NO_FORGE_REASON,
   parseRemote,
@@ -206,5 +207,47 @@ describe('listForgeItems / searchForgeItems (the /github and /github/search rout
     };
     expect(await searchForgeItems(driver, 'pr', 'fix', { limit: 7 })).toEqual({ available: true, items: [] });
     expect(calls).toEqual([['pr', 'fix', { limit: 7 }]]);
+  });
+});
+
+describe('listForgeComments (the /github/comments route)', () => {
+  // Spec 2026-08-10-forge-provider-adapters, Step 1.5: the route goes through the driver, and a
+  // missing forge or capability degrades in the payload instead of throwing.
+  const base: ForgeDriver = {
+    kind: 'gitlab',
+    detect: async () => ({ available: true }),
+    detectCached: () => null,
+    listIssues: async () => [],
+    listPRs: async () => [],
+    createPR: async () => ({ ok: false, error: 'test' }),
+    prStatus: async () => null,
+    viewUrl: () => null,
+  };
+
+  it('answers the unavailable payload for a null forge', async () => {
+    expect(await listForgeComments(null, 'issue', 1, {})).toEqual({
+      available: false,
+      reason: NO_FORGE_REASON,
+      comments: [],
+    });
+  });
+
+  it('degrades for a driver without listComments', async () => {
+    expect(await listForgeComments(base, 'pr', 137, {})).toEqual({
+      available: false,
+      reason: 'Comments are not supported for this gitlab remote',
+      comments: [],
+    });
+  });
+
+  it('delegates to listComments with the kind, number and options', async () => {
+    const calls: unknown[] = [];
+    const payload = { available: true, comments: [] };
+    const driver: ForgeDriver = {
+      ...base,
+      listComments: async (kind, number, opts) => (calls.push([kind, number, opts]), payload),
+    };
+    expect(await listForgeComments(driver, 'pr', 137, { refresh: true })).toBe(payload);
+    expect(calls).toEqual([['pr', 137, { refresh: true }]]);
   });
 });

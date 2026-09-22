@@ -11,7 +11,7 @@ import {
   resolveForge,
   searchForgeItems,
 } from './index.ts';
-import type { ForgeDriver, ForgeItem } from './types.ts';
+import type { ForgeChecksData, ForgeDriver, ForgeItem, ForgeRefStatusData } from './types.ts';
 
 /** Forge resolution (spec §"Forge-driver seam"): remote host → driver | null. */
 
@@ -285,7 +285,7 @@ describe('listForgeChecks (the /github/checks route)', () => {
 
   it('delegates to listChecks with the numbers', async () => {
     const calls: unknown[] = [];
-    const payload = { available: true, checks: { 1: 'passing' as const } };
+    const payload: ForgeChecksData = { available: true, checks: { 1: 'passing' } };
     const driver: ForgeDriver = {
       ...base,
       listChecks: async (numbers) => (calls.push(numbers), payload),
@@ -328,7 +328,7 @@ describe('forgeRefStatus (the /github/ref-status route)', () => {
 
   it('delegates to refStatus with the prs and issues lists', async () => {
     const calls: unknown[] = [];
-    const payload = { available: true, prs: {}, issues: {}, recheckAfterMs: null };
+    const payload: ForgeRefStatusData = { available: true, prs: {}, issues: {}, recheckAfterMs: null };
     const driver: ForgeDriver = {
       ...base,
       refStatus: async (prs, issues) => (calls.push([prs, issues]), payload),

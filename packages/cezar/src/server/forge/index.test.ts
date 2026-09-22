@@ -289,6 +289,27 @@ describe('GitHub driver viewUrl', () => {
   });
 });
 
+describe('GitHub driver viewUrl for a GitHub Enterprise host (Step 2.4)', () => {
+  // The driver's viewUrl base now comes from the parsed remote's own origin, not a
+  // `https://github.com` literal, so an enterprise host's links resolve to the enterprise host.
+  afterEach(() => __setForgeHostsForTests(null));
+
+  const driver = () => {
+    __setForgeHostsForTests({ 'ghe.acme.corp': 'github' });
+    return resolveForge(info('git@ghe.acme.corp:o/r.git'))!;
+  };
+
+  it.each([
+    ['repo', 'x', 'https://ghe.acme.corp/o/r'],
+    ['issue', 142, 'https://ghe.acme.corp/o/r/issues/142'],
+    ['pr', 5, 'https://ghe.acme.corp/o/r/pull/5'],
+    ['branch', 'feat/cockpit ui', 'https://ghe.acme.corp/o/r/tree/feat/cockpit%20ui'],
+    ['commit', 'abc1234', 'https://ghe.acme.corp/o/r/commit/abc1234'],
+  ] as const)('%s → %s', (kind, ref, expected) => {
+    expect(driver().viewUrl(kind, ref)).toBe(expected);
+  });
+});
+
 describe('ForgeDriver optional capabilities', () => {
   // Type-level (spec 2026-08-10-forge-provider-adapters § Driver interface changes): a driver
   // implementing only the required members must compile — every capability beyond them

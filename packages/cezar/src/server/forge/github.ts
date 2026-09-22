@@ -2790,10 +2790,14 @@ export function mergePreflightAllowed(current: ForgePrMergeState, overrideRules 
   return current.canMerge || (overrideRules && current.canOverride);
 }
 
-/** owner/repo parsed out of the origin remote — feeds `viewUrl`. */
+/** owner/repo/origin parsed out of the remote — feeds `viewUrl`. `origin` is optional so a caller
+ *  that only has owner/repo (e.g. an older test double) still compiles; a missing `origin` falls
+ *  back to `https://github.com` (Step 2.4, spec 2026-08-10-forge-provider-adapters) so nothing
+ *  else changes. */
 export interface GithubRepoRef {
   owner: string;
   repo: string;
+  origin?: string;
 }
 
 const GH_PR_STATES: Record<string, ForgePrStatus['state']> = {
@@ -2857,7 +2861,9 @@ export function createGithubDriver(repoRoot: string, repoRef: GithubRepoRef | nu
 
     viewUrl: (kind: ForgeRefKind, ref: string | number): string | null => {
       if (!repoRef) return null;
-      const base = `https://github.com/${repoRef.owner}/${repoRef.repo}`;
+      // Built from the remote's own origin (spec 2026-08-10-forge-provider-adapters, Step 2.4) so
+      // a GitHub Enterprise host's links resolve to the enterprise host, not github.com.
+      const base = `${repoRef.origin ?? 'https://github.com'}/${repoRef.owner}/${repoRef.repo}`;
       // Branch names may contain '/' — encode per segment, keep the slashes.
       const path = String(ref).split('/').map(encodeURIComponent).join('/');
       switch (kind) {

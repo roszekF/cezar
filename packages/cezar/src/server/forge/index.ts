@@ -192,7 +192,7 @@ export function resolveForge(repoInfo: RepoInfo | null): ForgeDriver | null {
   if (!parsed) return null;
   const kind = forgeKindOfHost(parsed.host);
   if (kind === 'github') {
-    return createGithubDriver(repoInfo.root, { owner: parsed.owner, repo: parsed.repo });
+    return createGithubDriver(repoInfo.root, { owner: parsed.owner, repo: parsed.repo, origin: parsed.origin });
   }
   // `gitlab` hosts resolve no driver until the GitLab adapter lands (spec
   // 2026-08-10-forge-provider-adapters, Step 3.1); the routes degrade in-payload meanwhile.

@@ -231,7 +231,8 @@ export class AutomationStore {
    * Take the project's poll lock, reclaiming one nobody is holding any more (#983). A cockpit
    * killed mid-poll leaves the lock behind with its own pid inside; consulting that pid makes the
    * crash case instant instead of a ten-minute, workspace-wide outage. `staleAfterMs` stays as the
-   * fallback for a lock whose pid we cannot read or trust.
+   * fallback for a lock whose pid we cannot read or trust; the window is inclusive, so `0` means
+   * "reclaim now" even when the lock's mtime lands in the calling millisecond.
    */
   acquireLease(staleAfterMs = 10 * 60_000): AutomationLease | undefined {
     mkdirSync(this.dataDir, { recursive: true });
@@ -258,9 +259,13 @@ export class AutomationStore {
     }
   }
 
-  /** Abandoned = the process that wrote the lock is gone, or nobody released it in `staleAfterMs`. */
+  /**
+   * Abandoned = the process that wrote the lock is gone, or nobody released it in `staleAfterMs`.
+   * The age comparison is inclusive: an age that exactly equals the window is already stale, which
+   * is what makes `acquireLease(0)` mean "reclaim now" rather than "reclaim a millisecond from now".
+   */
   private isLeaseAbandoned(path: string, staleAfterMs: number): boolean {
-    if (this.now().getTime() - statSync(path).mtimeMs > staleAfterMs) return true;
+    if (this.now().getTime() - statSync(path).mtimeMs >= staleAfterMs) return true;
     const pid = readLeasePid(path);
     // An unreadable pid (an empty or half-written lock) leaves only the age rule above.
     if (pid === undefined || pid === process.pid) return false;

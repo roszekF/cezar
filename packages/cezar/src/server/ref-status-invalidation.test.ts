@@ -100,6 +100,10 @@ describe('a reference cezar changes itself is forgotten, not waited out', () => 
     execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: worktree });
     execFileSync('git', ['config', 'user.name', 'Test'], { cwd: worktree });
     execFileSync('git', ['commit', '--allow-empty', '-m', 'work'], { cwd: worktree });
+    // The route resolves the forge from the RUN'S WORKTREE (spec 2026-08-10-forge-provider-adapters,
+    // Step 1.8) — the same root `createDraftPr` pushes from — so this standalone worktree needs its
+    // own origin, even though `CEZ_DRY_RUN=1` never actually pushes to it.
+    execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/demo.git'], { cwd: worktree });
     const run = store.createRun({ title: 'Ship it', task: 'ship it', workflow: 'quick-task', steps: [] });
     store.updateRun(run.id, { status: 'review', worktreePath: worktree, branch: 'cez/abc' });
 
@@ -112,6 +116,31 @@ describe('a reference cezar changes itself is forgotten, not waited out', () => 
       expect(created.status).toBe(201);
       // The dry-run catalog's fake PR URL is `…/pull/777`.
       expect(forgetRefStatus).toHaveBeenCalledWith(repoRoot, 777);
+    } finally {
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+
+  it('409s with a manual merge hint when the run worktree has no supported forge remote', async () => {
+    const worktree = mkdtempSync(join(tmpdir(), 'cez-refinvalidate-noforge-'));
+    execFileSync('git', ['init', '-b', 'cez/def'], { cwd: worktree });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: worktree });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: worktree });
+    execFileSync('git', ['commit', '--allow-empty', '-m', 'work'], { cwd: worktree });
+    // No `origin` remote at all — the driver has nothing to resolve a forge from.
+    const run = store.createRun({ title: 'Ship it too', task: 'ship it too', workflow: 'quick-task', steps: [] });
+    store.updateRun(run.id, { status: 'review', worktreePath: worktree, branch: 'cez/def' });
+
+    try {
+      const res = await apiRequest(app, `/api/v1/runs/${run.id}/pr`, {
+        method: 'POST',
+        headers: { origin: 'http://127.0.0.1:4321' },
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'No supported forge remote detected — merge the branch locally',
+        manual: 'git merge cez/def',
+      });
     } finally {
       rmSync(worktree, { recursive: true, force: true });
     }

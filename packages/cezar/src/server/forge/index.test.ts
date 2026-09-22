@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RepoInfo } from '../git.ts';
 import {
   forgeKindOfRemote,
+  forgePrDiff,
   forgeRefStatus,
   listForgeChecks,
   listForgeComments,
@@ -11,7 +12,7 @@ import {
   resolveForge,
   searchForgeItems,
 } from './index.ts';
-import type { ForgeChecksData, ForgeDriver, ForgeItem, ForgeRefStatusData } from './types.ts';
+import type { ForgeChecksData, ForgeDriver, ForgeItem, ForgePrDiffResult, ForgeRefStatusData } from './types.ts';
 
 /** Forge resolution (spec §"Forge-driver seam"): remote host → driver | null. */
 
@@ -335,5 +336,59 @@ describe('forgeRefStatus (the /github/ref-status route)', () => {
     };
     expect(await forgeRefStatus(driver, [1, 2], [3])).toBe(payload);
     expect(calls).toEqual([[[1, 2], [3]]]);
+  });
+});
+
+describe('forgePrDiff (the /github/prs/:number/changes route)', () => {
+  // Spec 2026-08-10-forge-provider-adapters, Step 1.8: the route goes through the driver, and a
+  // missing forge or capability degrades in the payload instead of throwing.
+  const base: ForgeDriver = {
+    kind: 'gitlab',
+    detect: async () => ({ available: true }),
+    detectCached: () => null,
+    listIssues: async () => [],
+    listPRs: async () => [],
+    createPR: async () => ({ ok: false, error: 'test' }),
+    prStatus: async () => null,
+    viewUrl: () => null,
+  };
+
+  it('answers the unavailable payload for a null forge', async () => {
+    expect(await forgePrDiff(null, 1, {})).toEqual({ available: false, reason: NO_FORGE_REASON });
+  });
+
+  it('degrades for a driver without prDiff', async () => {
+    expect(await forgePrDiff(base, 1, {})).toEqual({
+      available: false,
+      reason: 'Pull request changes are not supported for this gitlab remote',
+    });
+  });
+
+  it('delegates to prDiff with the number and options', async () => {
+    const calls: unknown[] = [];
+    const payload: ForgePrDiffResult = {
+      available: true,
+      number: 1,
+      headSha: 'a'.repeat(40),
+      files: [],
+      additions: 0,
+      deletions: 0,
+      truncated: false,
+    };
+    const driver: ForgeDriver = {
+      ...base,
+      prDiff: async (number, opts) => (calls.push([number, opts]), payload),
+    };
+    expect(await forgePrDiff(driver, 1, { refresh: true })).toBe(payload);
+    expect(calls).toEqual([[1, { refresh: true }]]);
+  });
+
+  it('lets a driver rejection propagate — the route needs it to map 404s', async () => {
+    class NotFound extends Error {}
+    const driver: ForgeDriver = {
+      ...base,
+      prDiff: async () => { throw new NotFound('nope'); },
+    };
+    await expect(forgePrDiff(driver, 1, {})).rejects.toBeInstanceOf(NotFound);
   });
 });

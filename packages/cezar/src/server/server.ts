@@ -186,6 +186,7 @@ import { isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
 import { browseDirectory, isInsideBrowseRoot, isLexicallyInsideBrowseRoot, resolveBrowseRoot } from './fs-browse.ts';
 import {
+  forgePrDiff,
   forgeRefStatus,
   listForgeChecks,
   listForgeComments,
@@ -195,11 +196,10 @@ import {
   searchForgeItems,
   type ForgeAvailability,
 } from './forge/index.ts';
-import { fetchGithubPrDiff, forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, GithubPrNotFoundError, GH_CHECKS_MAX, GH_SEARCH_MAX, GH_REF_STATUS_MAX } from './github.ts';
+import { forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, GithubPrNotFoundError, GH_CHECKS_MAX, GH_SEARCH_MAX, GH_REF_STATUS_MAX } from './github.ts';
 import { ensureLaunchKey } from './launch-key.ts';
 import { openInTerminal } from './open-in-terminal.ts';
 import { agentCliRunner, detectOpenTargets, openFileInDefaultApp, openInApp } from './open-in-app.ts';
-import { createDraftPr } from './pr.ts';
 import { ProviderRuntimeAuthObserver } from './provider-auth-runtime.ts';
 import {
   providerForActiveRun,
@@ -4536,7 +4536,17 @@ export function createApp(deps: ServerDeps) {
           400,
         );
       }
-      const outcome = await createDraftPr({
+      // The forge that can answer this belongs to the WORKTREE's remote, not the project's — the
+      // driver's `createPR` pushes and opens the pull request from `run.worktreePath` (spec
+      // 2026-08-10-forge-provider-adapters, Step 1.8), the same root `resolveForge` reads here.
+      const forge = resolveForge(await getRepoInfo(run.worktreePath));
+      if (!forge) {
+        return c.json(
+          { error: 'No supported forge remote detected — merge the branch locally', manual: `git merge ${run.branch}` },
+          409,
+        );
+      }
+      const outcome = await forge.createPR({
         repoRoot,
         run,
         handoffText: readHandoff(dataDir, id),
@@ -5417,9 +5427,10 @@ export function createApp(deps: ServerDeps) {
       async (c) => {
         const { root: repoRoot } = c.get('project');
         const parsed = { data: c.req.valid('param') };
+        const forge = resolveForge(await getRepoInfo(repoRoot));
         try {
           return c.json(
-            await fetchGithubPrDiff(repoRoot, parsed.data.number, c.req.valid('query').refresh === '1'),
+            await forgePrDiff(forge, parsed.data.number, { refresh: c.req.valid('query').refresh === '1' }),
           );
         } catch (err) {
           if (err instanceof GithubPrNotFoundError) return c.json({ error: err.message }, 404);

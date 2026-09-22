@@ -7,6 +7,7 @@ import type {
   ForgeKind,
   ForgeListData,
   ForgeListOptions,
+  ForgePrDiffResult,
   ForgeRefStatusData,
   ForgeSearchData,
 } from './types.ts';
@@ -173,6 +174,23 @@ export async function forgeRefStatus(forge: ForgeDriver | null, prs: number[], i
     return { available: false, reason: `Reference status is not supported for this ${forge.kind} remote`, recheckAfterMs: null };
   }
   return forge.refStatus(prs, issues);
+}
+
+/**
+ * The `GET /api/github/prs/:number/changes` bounded diff view through the driver seam (spec
+ * 2026-08-10-forge-provider-adapters, Step 1.8). A null forge, or one without `prDiff`, degrades
+ * in the payload — but unlike every other helper here this one does NOT catch everything the
+ * driver throws: `GithubPrNotFoundError` propagates on purpose, so the route can still map a
+ * missing pull request to 404 exactly as it did calling `fetchGithubPrDiff` directly.
+ */
+export async function forgePrDiff(
+  forge: ForgeDriver | null,
+  number: number,
+  opts: { refresh?: boolean },
+): Promise<ForgePrDiffResult> {
+  if (!forge) return { available: false, reason: NO_FORGE_REASON };
+  if (!forge.prDiff) return { available: false, reason: `Pull request changes are not supported for this ${forge.kind} remote` };
+  return forge.prDiff(number, opts);
 }
 
 export type { ForgeDriver, ForgeAvailability, ForgeItem, ForgeKind, ForgePrStatus, ForgeRefKind } from './types.ts';

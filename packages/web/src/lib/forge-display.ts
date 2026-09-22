@@ -29,3 +29,18 @@ export function forgeCli(kind: ForgeKind | null | undefined): { cli: string; aut
     ? { cli: 'glab', authCommand: 'glab auth login' }
     : { cli: 'gh', authCommand: 'gh auth login' }
 }
+
+/**
+ * The noun for a code-review request on this forge — "pull request" on GitHub, "merge request"
+ * on GitLab — for every place the tab used to hard-code "pull request" (Step 3.8-review-fix). One
+ * helper rather than a ternary at each call site, so the two forms can't drift apart.
+ */
+export function forgePrNoun(
+  kind: ForgeKind | null | undefined,
+  options: { plural?: boolean; capitalized?: boolean } = {},
+): string {
+  const { plural = false, capitalized = false } = options
+  const noun = kind === 'gitlab' ? 'merge request' : 'pull request'
+  const word = plural ? `${noun}s` : noun
+  return capitalized ? `${word.charAt(0).toUpperCase()}${word.slice(1)}` : word
+}

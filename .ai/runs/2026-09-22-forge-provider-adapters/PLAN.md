@@ -44,7 +44,7 @@
 | 1 | 1.7-review-fix | Type the driver-stub test payloads explicitly | inline | done | 5f7bae12 |
 | 1 | 1.8-review-fix | Keep the pre-seam draft-PR path when no forge resolves | inline | done | 7ec3ab5f |
 | 3 | 3.2-review-fix | Freeze the clock in the GitLab dry-run list test | inline | done | 927f232b |
-| 3 | 3.8-review-fix | Finish forge-aware copy across the forge tab | dispatch | todo | — |
+| 3 | 3.8-review-fix | Finish forge-aware copy across the forge tab | dispatch | done | pending |
 
 ## Goal
 

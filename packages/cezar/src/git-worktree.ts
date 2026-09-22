@@ -4,7 +4,6 @@ import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { resolveTaskDiffBase } from './git-diff-base.ts';
 import { isSafeGitRef } from './git-refs.ts';
-import { withSandboxGitEnv } from './core/sandbox/sandbox-git.ts';
 
 /**
  * Git worktree per task (spec 006). Each run gets its own branch
@@ -37,7 +36,7 @@ function git(cwd: string, args: string[]): Promise<GitResult> {
     execFile(
       'git',
       args,
-      { cwd, maxBuffer: 32 * 1024 * 1024, encoding: 'utf8', env: withSandboxGitEnv(cwd, undefined) },
+      { cwd, maxBuffer: 32 * 1024 * 1024, encoding: 'utf8' },
       (err, stdout, stderr) => resolve({ ok: !err, stdout: stdout ?? '', stderr: stderr ?? '' }),
     );
   });

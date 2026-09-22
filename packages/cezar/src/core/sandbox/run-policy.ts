@@ -1,4 +1,3 @@
-import { execFile } from 'node:child_process';
 import type { SandboxCapability } from '@open-mercato/cezar-contract';
 
 /**
@@ -15,8 +14,8 @@ export interface SandboxRunRequest {
   agentProfile?: string;
   dispatch: boolean;
   isGitRepo: boolean;
-  /** `extensions.worktreeConfig` is on in the repo. */
-  worktreeConfig: boolean;
+  /** cezar is running in the repository's MAIN checkout, not a linked worktree. */
+  mainCheckout: boolean;
 }
 
 export function sandboxRunRefusal(req: SandboxRunRequest): string | undefined {
@@ -26,9 +25,12 @@ export function sandboxRunRefusal(req: SandboxRunRequest): string | undefined {
   if (req.capability.state !== 'available') {
     return `this sbx (${req.capability.version ?? 'unknown version'}) is not supported — update Docker Sandboxes and restart cezar`;
   }
-  if (!req.isGitRepo) return 'sandboxed runs need a git repository: the sandbox mounts the task worktree';
+  if (!req.isGitRepo) return 'sandboxed runs need a git repository: the sandbox clones it';
+  if (!req.mainCheckout) {
+    return 'sandboxed runs need cezar to be running in the repository\'s main checkout — a sandbox clones the repo, and `sbx --clone` cannot clone from a linked worktree';
+  }
   if (req.worktree === false) {
-    return 'sandboxed runs need a worktree — the sandbox mounts the task worktree, never the main checkout';
+    return 'sandboxed runs need a worktree — it is where the agent\'s commits land for review on the host';
   }
   const unsupported = req.backends.filter((b) => !(req.capability?.backends as readonly string[]).includes(b));
   if (unsupported.length) {
@@ -41,17 +43,5 @@ export function sandboxRunRefusal(req: SandboxRunRequest): string | undefined {
     return 'sandboxed runs use the sandbox login, not a cezar agent account — clear the account override';
   }
   if (req.dispatch) return 'sandboxed runs cannot dispatch tasks: the sandbox cannot reach the cockpit';
-  if (req.worktreeConfig) {
-    return 'sandboxed runs are refused while extensions.worktreeConfig is on: a per-worktree git config would be writable from the sandbox';
-  }
   return undefined;
-}
-
-/** `git config --bool extensions.worktreeConfig` in the repo; any failure reads as off. */
-export function worktreeConfigEnabled(repoRoot: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    execFile('git', ['config', '--bool', '--get', 'extensions.worktreeConfig'], { cwd: repoRoot, encoding: 'utf8' }, (err, stdout) =>
-      resolve(!err && stdout.trim() === 'true'),
-    );
-  });
 }

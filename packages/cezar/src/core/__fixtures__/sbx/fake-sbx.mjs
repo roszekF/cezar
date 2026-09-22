@@ -36,7 +36,7 @@ switch (command) {
   }
   case 'create': {
     if (rest.includes('--help')) {
-      const flags = ['--pull', '--template', '--name', '--memory'];
+      const flags = ['--pull', '--template', '--name', '--memory', '--clone'];
       if (process.env.FAKE_SBX_BROKEN !== 'help') flags.push('--skills');
       process.stdout.write(`Usage:\n  sbx create [flags] AGENT [PATH...]\n\nFlags:\n${flags.map((f) => `      ${f}`).join('\n')}\n`);
       break;

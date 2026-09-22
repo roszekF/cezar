@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync
 import { join } from 'node:path';
 import { z } from 'zod';
 import { collectSecretValues, redactDeep, redactSecrets } from '../core/secret-redaction.ts';
+import { cezarHomeDir } from '../paths.ts';
 // Sibling module, files only — a draft belongs to a run and is deleted with it (#939).
 import { deleteRunDrafts } from './drafts.ts';
 // Pure, dependency-free reference helpers — the same sanity bound the marker parser applies.
@@ -1415,9 +1416,11 @@ export class RunStore extends EventEmitter {
     return join(this.dataDir, 'runs', `${runId}.handoff.md`);
   }
 
-  /** A sandboxed run's own directory — `sandboxRunDir()` in handoff.ts, inlined likewise. */
+  /** A sandboxed run's own directory — `sandboxRunDir()` in handoff.ts, inlined likewise. It sits
+   *  under the cezar home, NOT under `dataDir`: a `--clone` sandbox cannot mount anything inside
+   *  the cloned repo without destroying the clone overlay (spec 2026-09-22-docker-sandboxes). */
   private sandboxDir(runId: string): string {
-    return join(this.dataDir, 'sandbox', runId);
+    return join(cezarHomeDir(), 'sandbox', runId);
   }
 
   /** Agent screenshots persisted by the run manager (see persistImage). */

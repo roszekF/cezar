@@ -126,7 +126,7 @@ export async function reclaimWorktrees(
       // The sandbox mounted this worktree; it goes with it (spec 2026-09-22-docker-sandboxes, Q2).
       // A later Continue rematerializes the worktree and creates a fresh sandbox.
       if (run.sandbox && !run.sandbox.removedAt) {
-        await (opts.removeSandbox ?? disposeRunSandbox)(run);
+        await (opts.removeSandbox ?? ((r) => disposeRunSandbox(r, repoRoot)))(run);
         store.updateRun(id, { sandbox: { ...run.sandbox, removedAt: now() } });
       }
       reclaimed.push(id);

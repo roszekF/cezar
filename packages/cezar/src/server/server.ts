@@ -51,7 +51,7 @@ import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from 
 import { detectEnvironment } from '../core/backend-detect.ts';
 import { detectSandboxCached, isCezarSandboxName } from '../core/sandbox/docker-sbx.ts';
 import { disposeRunSandbox } from '../core/sandbox/run-sandbox.ts';
-import { sandboxRunRefusal, worktreeConfigEnabled } from '../core/sandbox/run-policy.ts';
+import { sandboxRunRefusal } from '../core/sandbox/run-policy.ts';
 import { RUNNER_IDS } from '../core/agent-runner.ts';
 import type { ContentBlock } from '../core/agent-runner.ts';
 import { AGENT_MODELS_LOCKED_ERROR, agentModelsLocked } from '../core/agent-model-policy.ts';
@@ -3896,7 +3896,9 @@ export function createApp(deps: ServerDeps) {
           agentProfile: parsed.data.agentProfile,
           dispatch: Boolean(parsed.data.dispatch && capabilities().dispatch),
           isGitRepo: (await getRepoInfo(repoRoot)) !== null,
-          worktreeConfig: await worktreeConfigEnabled(repoRoot),
+          // `sbx --clone` refuses to clone from a linked worktree, so a cezar booted inside one
+          // cannot sandbox at all (spec 2026-09-22-docker-sandboxes).
+          mainCheckout: !existsSync(join(repoRoot, '.git')) || statSync(join(repoRoot, '.git')).isDirectory(),
         });
         if (refusal) return c.json({ error: refusal }, 400);
       }
@@ -4593,7 +4595,7 @@ export function createApp(deps: ServerDeps) {
       if (!run) return c.json({ error: 'not found' }, 404);
       if (manager.isActive(id)) return c.json({ error: 'run is active — cancel it first' }, 409);
       // The sandbox mounts the worktree, so it goes with it.
-      await disposeSandboxOf(store, run);
+      await disposeSandboxOf(store, run, repoRoot);
       if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
       store.updateRun(id, { worktreePath: undefined, branch: undefined });
       return c.json({ removed: true });
@@ -4607,7 +4609,7 @@ export function createApp(deps: ServerDeps) {
       if (!run) return c.json({ error: 'not found' }, 404);
       // Delete cleans up after itself: worktree + branch go with the run (spec 006), and so does
       // its sandbox (spec 2026-09-22-docker-sandboxes).
-      await disposeSandboxOf(store, run);
+      await disposeSandboxOf(store, run, repoRoot);
       if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
       return store.deleteRun(id) ? c.json({ deleted: true }) : c.json({ error: 'not found' }, 404);
     });
@@ -4798,7 +4800,7 @@ export function createApp(deps: ServerDeps) {
 
       for (const loser of losers) {
         if (manager.isActive(loser.id)) manager.cancel(loser.id);
-        await disposeSandboxOf(store, loser);
+        await disposeSandboxOf(store, loser, repoRoot);
         if (loser.worktreePath) await removeWorktree(repoRoot, loser.worktreePath, loser.branch);
         store.updateRun(loser.id, { worktreePath: undefined, branch: undefined });
         store.setArchived(loser.id, true);
@@ -6293,8 +6295,8 @@ function activeSandboxName(run: { sandbox?: { name: string; removedAt?: string }
 }
 
 /** Remove a run's sandbox for good and record it. Best-effort, like the worktree removal it follows. */
-async function disposeSandboxOf(store: RunStore, run: RunRecord): Promise<void> {
+async function disposeSandboxOf(store: RunStore, run: RunRecord, repoRoot?: string): Promise<void> {
   if (!run.sandbox || run.sandbox.removedAt) return;
-  await disposeRunSandbox(run);
+  await disposeRunSandbox(run, repoRoot);
   if (store.getRun(run.id)) store.updateRun(run.id, { sandbox: { ...run.sandbox, removedAt: new Date().toISOString() } });
 }

@@ -327,22 +327,31 @@ When [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) (`sbx`, 0.45 or n
 installed, the composer shows a **Sandbox** toggle. A sandboxed task gets its own microVM,
 created at its first step, and **both its agent and its workflow check steps** run inside it.
 
-**What the VM sees**, each at the same path as on your machine: the task's worktree; the repo's
-`.git` (the agent commits), with `config`, `hooks/`, `info/` and the worktree's pointer files
-read-only; and the task's own `.ai/cezar/sandbox/<id>/` (its handoff journal and temp
-directory). **Never** the main checkout, the rest of `.ai/cezar/` (`runs.json`, workflows, other
-tasks), your home directory, or your host environment — only the task's own variables cross into
-the VM. cezar's own git work (autosave, diffs, commit, push, draft PR) stays on your machine and
-runs with the git directories pinned and repo hooks off, so nothing the agent writes in the VM
-can make it run code on the host. `npm run test:real-sbx -w @open-mercato/cezar` checks all of
-this against a real sandbox.
+**How the isolation works.** The sandbox is created with `sbx create --clone`: the agent works
+on a **private clone** of your repository inside the VM, and your repository is mounted
+**read-only**. Nothing the agent does can write anything on your machine — there is no writable
+`.git`, so no gitlink, `commondir`, `.git/modules` config or hook path it could point at a
+script your own `git status` would then execute on the host. Besides the clone, the VM sees only
+the task's own directory outside the repo (`~/.cezar/sandbox/<task id>/` — its handoff journal,
+temp directory and pasted images). Your host environment does not cross: only the task's own
+variables do. It *can read* your repository, including files you keep there but never commit —
+it is read-only, and no worse than today's default, where the agent runs on your machine with
+your permissions and can read anything.
+
+**How the work comes back.** The agent commits in its clone; sbx publishes that clone over a
+loopback git daemon, and cezar fetches from it and fast-forwards the task branch in the task's
+worktree on your machine. So the review gate is unchanged — you review a normal branch in a
+normal worktree — while the host's git never runs inside the VM and the VM's git never runs on
+the host. Because the host cannot see the VM's working tree, autosave commits *inside* the VM
+first and then syncs; anything the agent leaves uncommitted stays in the VM until it does.
+`npm run test:real-sbx -w @open-mercato/cezar` checks all of this against a real sandbox.
 
 Turning **Sandbox** on turns **Worktree** on, and turning Worktree off turns Sandbox off: a
-sandbox mounts the task's worktree, so the two move together rather than one greying the other
-out. **Settings → Resources → Sandbox by default** starts every new task sandboxed where `sbx`
-is installed; a per-task choice still wins, and **Plan first** works too — the planning call
-itself runs on the host (it has no worktree, no shell and no write tools), and the planned run
-it produces is the part that goes into the VM.
+sandboxed task's commits land in its worktree for review, so the two move together rather than
+one greying the other out. **Settings → Resources → Sandbox by default** starts every new task
+sandboxed where `sbx` is installed; a per-task choice still wins, and **Plan first** works too —
+the planning call itself runs on the host (it has no worktree, no shell and no write tools), and
+the planned run it produces is the part that goes into the VM.
 
 **One-time setup:**
 
@@ -372,8 +381,9 @@ sbx policy init balanced                          # or allow-all / deny-all, non
 
 **File access is not a policy** — locally, `sbx`'s filesystem rules are fixed
 (`sbx policy inspect local-policy` shows them as not editable from the CLI). What a sandboxed
-task can reach is exactly the mount list above, which cezar decides: the worktree, the hardened
-`.git`, the task's own directory and its images. There is no per-task way to add another path
+task can reach is exactly the mount list above, which cezar decides: its own clone of the repo,
+your repo read-only as that clone's source, and the task's own directory outside the repository.
+There is no per-task way to add another path
 yet; if you need one (a shared cache, a fixture directory), say so and it becomes a setting.
 Per-sandbox network rules are awkward for the same reason — each task gets a new sandbox name —
 so the global policy is the practical knob today.
@@ -386,9 +396,11 @@ gone — only its own `cez-<task id>` VMs for this repo. **Open in CLI** resumes
 the VM (`sbx exec -it cez-<id> claude --resume …`).
 
 **Limits (v1):** Claude and Codex only, one agent per task (no mixed-agent workflows, and a
-Continue must stay on the agent the sandbox was created for); a worktree is always used; no
-agent-account override (a sandbox has its own login); no dispatch, `cez automation` or
-follow-up inbox (the VM can't reach the cockpit).
+Continue must stay on the agent the sandbox was created for); a worktree is always used; cezar
+itself must be running in the repository's main checkout, since `sbx --clone` cannot clone from
+a linked worktree; no agent-account override (a sandbox has its own login); no dispatch,
+`cez automation` or follow-up inbox (the VM can't reach the cockpit). Work the agent has not
+committed lives only in the VM until the next autosave syncs it back.
 Check steps see only the task's variables — list anything else they need in
 `CEZ_ENV_PASSTHROUGH=A,B` (visible to the agent too). The memory column measures only the
 local `sbx` client; the VM is capped with your workspace memory limit instead. Dependencies

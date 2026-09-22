@@ -8,7 +8,7 @@ import type { SandboxCapability } from '@open-mercato/cezar-contract';
 import { listSandboxes, sandboxLauncher } from './docker-sbx.js';
 import { sandboxRunRefusal, type SandboxRunRequest } from './run-policy.js';
 import { prepareRunSandbox, reconcileSandboxes, sandboxAgentSpec, sandboxAuthHint, sandboxForwardKeys } from './run-sandbox.js';
-import { sandboxGitEnv, unregisterSandboxedWorktree } from './sandbox-git.js';
+import { cezarHomeDir } from '../../paths.js';
 
 const fakeSbx = fileURLToPath(new URL('../__fixtures__/sbx/fake-sbx.mjs', import.meta.url));
 chmodSync(fakeSbx, 0o755);
@@ -23,7 +23,7 @@ describe('sandboxRunRefusal', () => {
     backends: ['claude'],
     dispatch: false,
     isGitRepo: true,
-    worktreeConfig: false,
+    mainCheckout: true,
   };
 
   it('accepts a plain Claude or Codex run', () => {
@@ -41,7 +41,7 @@ describe('sandboxRunRefusal', () => {
     ['mixed kits', { backends: ['claude', 'codex'] }, /mixes Claude and Codex/],
     ['account override', { agentProfile: 'work' }, /sandbox login/],
     ['dispatch', { dispatch: true }, /cannot dispatch/],
-    ['worktreeConfig', { worktreeConfig: true }, /extensions\.worktreeConfig/],
+    ['cezar itself in a worktree', { mainCheckout: false }, /main checkout/],
   ])('refuses %s, saying what to change', (_label, patch, message) => {
     expect(sandboxRunRefusal({ ...ok, ...patch })).toMatch(message);
   });
@@ -69,7 +69,6 @@ describe('prepareRunSandbox / reconcile (fake sbx)', () => {
     delete process.env.FAKE_SBX_BROKEN;
   });
   afterEach(() => {
-    unregisterSandboxedWorktree(fx.wt);
     for (const [key, value] of Object.entries({ CEZ_SBX_BIN: saved.bin, FAKE_SBX_STATE: saved.state, FAKE_SBX_EXEC_LOG: saved.log, FAKE_SBX_BROKEN: saved.broken })) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -78,29 +77,41 @@ describe('prepareRunSandbox / reconcile (fake sbx)', () => {
 
   const record = () => ({ id: RUN_ID, sandbox: { name: `cez-${RUN_ID}` }, worktreePath: fx.wt });
 
-  it('creates the VM once, mounting the worktree and a hardened .git — never the main checkout', async () => {
+  it('clones the repo and mounts nothing inside it — no worktree, no .git, no main checkout', async () => {
     expect(await prepareRunSandbox({ repoRoot: fx.repo, dataDir: fx.dataDir, record: record(), backend: 'claude' })).toEqual({ created: true });
     expect(await prepareRunSandbox({ repoRoot: fx.repo, dataDir: fx.dataDir, record: record(), backend: 'claude' })).toEqual({ created: false });
 
     const [box] = (await listSandboxes()) ?? [];
     expect(box?.name).toBe(`cez-${RUN_ID}`);
     const ws = box?.workspaces ?? [];
-    expect(ws[0]).toBe(fx.wt);
-    expect(ws).toContain(join(fx.repo, '.git'));
-    for (const held of ['config', 'hooks', 'info']) expect(ws).toContain(`${join(fx.repo, '.git', held)}:ro`);
-    expect(ws.some((w) => w.endsWith('/commondir:ro'))).toBe(true);
-    expect(ws.some((w) => w.endsWith('/gitdir:ro'))).toBe(true);
-    expect(ws).toContain(join(fx.dataDir, 'sandbox', RUN_ID));
-    expect(ws).not.toContain(fx.repo);
-    expect(ws).not.toContain(fx.dataDir);
-    // …and host git on the worktree is hardened from here on.
-    expect(sandboxGitEnv(fx.wt)?.GIT_WORK_TREE).toBe(fx.wt);
+    // The repo is the CLONE SOURCE (sbx mounts it read-only), and it is the primary workspace.
+    expect(ws[0]).toBe(fx.repo);
+    // Nothing under the repository is mounted: a workspace inside the cloned path would replace
+    // the clone overlay there, and `.git` being writable is the escape this design removed.
+    expect(ws).not.toContain(fx.wt);
+    expect(ws).not.toContain(join(fx.repo, '.git'));
+    expect(ws.some((w) => w.includes(`${join(fx.repo, '.git')}`))).toBe(false);
+    expect(ws.some((w) => w.startsWith(fx.dataDir))).toBe(false);
+    // The run's own directory lives outside the repo, under the cezar home.
+    expect(ws).toContain(join(cezarHomeDir(), 'sandbox', RUN_ID));
+    expect(ws).toContain(`${join(cezarHomeDir(), 'sandbox', RUN_ID, 'images')}:ro`);
+  });
+
+  it('replaces a sandbox whose MOUNT LIST differs, not just its primary workspace', async () => {
+    // The mount list is the security boundary, so a VM an older cezar left with a wider list is
+    // replaced rather than adopted — matching on the primary workspace alone would adopt it.
+    await prepareRunSandbox({ repoRoot: fx.repo, dataDir: fx.dataDir, record: record(), backend: 'claude' });
+    const state = JSON.parse(readFileSync(fx.state, 'utf8')) as { sandboxes: Array<{ name: string; workspaces: string[] }> };
+    state.sandboxes[0]!.workspaces = [fx.repo, join(fx.repo, '.git')];
+    writeFileSync(fx.state, JSON.stringify(state));
+    expect(await prepareRunSandbox({ repoRoot: fx.repo, dataDir: fx.dataDir, record: record(), backend: 'claude' })).toEqual({ created: true });
+    expect((await listSandboxes())?.[0]?.workspaces).not.toContain(join(fx.repo, '.git'));
   });
 
   it('replaces a crash-left sandbox whose primary workspace does not match', async () => {
     writeFileSync(fx.state, JSON.stringify({ sandboxes: [{ name: `cez-${RUN_ID}`, status: 'stopped', workspaces: ['/elsewhere'] }] }));
     expect(await prepareRunSandbox({ repoRoot: fx.repo, dataDir: fx.dataDir, record: record(), backend: 'claude' })).toEqual({ created: true });
-    expect((await listSandboxes())?.[0]?.workspaces[0]).toBe(fx.wt);
+    expect((await listSandboxes())?.[0]?.workspaces[0]).toBe(fx.repo);
   });
 
   it('throws a readable error when sbx create fails (e.g. signed out)', async () => {
@@ -124,10 +135,10 @@ describe('prepareRunSandbox / reconcile (fake sbx)', () => {
       fx.state,
       JSON.stringify({
         sandboxes: [
-          { name: `cez-${RUN_ID}`, status: 'running', workspaces: [fx.wt] },
-          { name: orphan, status: 'stopped', workspaces: [join(fx.dataDir, 'worktrees', 'gone')] },
-          { name: foreign, status: 'running', workspaces: ['/other/project/.ai/cezar/worktrees/x'] },
-          { name: 'my-own-box', status: 'running', workspaces: [fx.wt] },
+          { name: `cez-${RUN_ID}`, status: 'running', workspaces: [fx.repo] },
+          { name: orphan, status: 'stopped', workspaces: [fx.repo] },
+          { name: foreign, status: 'running', workspaces: ['/other/project'] },
+          { name: 'my-own-box', status: 'running', workspaces: [fx.repo] },
         ],
       }),
     );
@@ -168,18 +179,19 @@ describe('prepareRunSandbox / reconcile (fake sbx)', () => {
 
 describe('sandboxAgentSpec', () => {
   it('moves the spec into the VM: own env, VM-visible dirs, fresh session after a recreate', () => {
-    const dataDir = realpathSync(mkdtempSync(join(tmpdir(), 'cez-spec-')));
+    const repoRoot = realpathSync(mkdtempSync(join(tmpdir(), 'cez-spec-')));
+    const runDir = join(cezarHomeDir(), 'sandbox', RUN_ID);
     const base = { userPrompt: 'go', cwd: '/wt', env: { CEZ_TASK_ID: RUN_ID, CEZ_TODOS_FILE: '/x/todos.json' }, resume: true, sessionId: 's' };
-    const kept = sandboxAgentSpec(base, { name: `cez-${RUN_ID}`, dataDir, runId: RUN_ID, backend: 'claude', created: false });
+    const kept = sandboxAgentSpec(base, { name: `cez-${RUN_ID}`, repoRoot, runId: RUN_ID, backend: 'claude', created: false });
     expect(kept.restartedSession).toBe(false);
     expect(kept.spec.resume).toBe(true);
     expect(kept.spec.launcher?.kind).toBe('sandbox');
     expect(kept.spec.env?.CEZ_TODOS_FILE).toBe('');
-    expect(kept.spec.env?.CLAUDE_CODE_TMPDIR).toBe(join(dataDir, 'sandbox', RUN_ID, 'tmp'));
+    expect(kept.spec.env?.CLAUDE_CODE_TMPDIR).toBe(join(runDir, 'tmp'));
     expect(existsSync(kept.spec.env?.CLAUDE_CODE_TMPDIR ?? '')).toBe(true);
-    expect(kept.spec.additionalDirectories).toEqual([join(dataDir, 'sandbox', RUN_ID)]);
+    expect(kept.spec.additionalDirectories).toEqual([runDir]);
 
-    const fresh = sandboxAgentSpec(base, { name: `cez-${RUN_ID}`, dataDir, runId: RUN_ID, backend: 'claude', created: true });
+    const fresh = sandboxAgentSpec(base, { name: `cez-${RUN_ID}`, repoRoot, runId: RUN_ID, backend: 'claude', created: true });
     expect(fresh.restartedSession).toBe(true);
     expect(fresh.spec.resume).toBe(false);
   });

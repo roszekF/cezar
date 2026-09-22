@@ -237,10 +237,15 @@ describe('Global settings → Resources', () => {
     serve()
     renderResources()
     const sandbox = (await screen.findByLabelText('Sandbox by default')) as HTMLSelectElement
-    expect(sandbox.value).toBe('off')
-    expect([...sandbox.options].map((option) => option.value)).toEqual(['on', 'off'])
+    // No stored opinion reads as "No default", like its two siblings — and stays reachable, so a
+    // user who set a default can clear it again.
+    expect(sandbox.value).toBe('inherit')
+    expect([...sandbox.options].map((option) => option.value)).toEqual(['inherit', 'on', 'off'])
 
     fireEvent.change(sandbox, { target: { value: 'on' } })
     await waitFor(() => expect(puts().at(-1)?.body).toEqual({ composerDefaults: { sandbox: true } }))
+
+    fireEvent.change(sandbox, { target: { value: 'inherit' } })
+    await waitFor(() => expect(puts().at(-1)?.body).toEqual({ composerDefaults: { sandbox: null } }))
   })
 })

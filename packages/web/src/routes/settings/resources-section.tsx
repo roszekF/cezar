@@ -332,11 +332,12 @@ function ResourcesForm({ config }: { config: WorkspaceConfigResponse }) {
             <select
               aria-label="Sandbox by default"
               data-slot="composer-default-sandbox"
-              value={composerDefaults.sandbox === true ? 'on' : 'off'}
+              value={composerDefaults.sandbox === null ? 'inherit' : composerDefaults.sandbox ? 'on' : 'off'}
               disabled={save.isPending}
               onChange={(event) => saveComposerDefault('sandbox', event.target.value)}
               className="rounded-md border border-input bg-card px-3 py-1.5 shadow-xs outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
             >
+              <option value="inherit">No default</option>
               <option value="on">On</option>
               <option value="off">Off</option>
             </select>

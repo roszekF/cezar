@@ -5,7 +5,6 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { loadConfig, type SkillsRepoSource } from './config.ts';
 import { parseFrontmatter, type Skill } from './skills.ts';
-import { withSandboxGitEnv } from './core/sandbox/sandbox-git.ts';
 
 /**
  * Team skills from remote git repos (spec 005), janitor-style: a bare clone
@@ -65,9 +64,7 @@ function git(args: string[], timeoutMs: number, cwd?: string): Promise<GitResult
         killSignal: 'SIGKILL',
         maxBuffer: 16 * 1024 * 1024,
         encoding: 'utf8',
-        env: cwd
-          ? withSandboxGitEnv(cwd, { ...process.env, ...GIT_HARDENING_ENV })
-          : { ...process.env, ...GIT_HARDENING_ENV },
+        env: { ...process.env, ...GIT_HARDENING_ENV },
       },
       (err, stdout, stderr) => resolve({ ok: !err, stdout: stdout ?? '', stderr: stderr ?? '' }),
     );

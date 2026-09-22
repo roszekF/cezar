@@ -279,12 +279,17 @@ export function resetDraft(): void {
 
 /**
  * The Sandbox toggle (spec 2026-09-22-docker-sandboxes). Shown only when the server found `sbx`
- * (`capabilities.sandbox`); disabled, with the reason, for a run the server would refuse — the
- * same rules as `sandboxRunRefusal`, so the composer never offers what submit would reject.
+ * (`capabilities.sandbox`); disabled, with the reason, for the refusals a CLIENT can see.
  *
- * The worktree rule is deliberately NOT here: a sandbox mounts the worktree, so turning Sandbox
- * on turns Worktree on (and turning Worktree off turns Sandbox off). The two move together
- * instead of one greying the other out — `new-task.tsx` owns that pairing.
+ * It is deliberately NOT a mirror of `sandboxRunRefusal`. Two of the server's rules depend on
+ * state no client payload carries — whether cezar runs in the repo's main checkout, and every
+ * backend the chosen workflow's steps resolve to (this only knows the single displayed runner).
+ * Those still land as a 400 whose message names what to change, which is the honest fallback;
+ * the rules below are the subset that can be decided here, so the common cases never submit.
+ *
+ * The worktree rule is also not here: a sandboxed run's commits come back to the worktree for
+ * review, so turning Sandbox on turns Worktree on (and turning Worktree off turns Sandbox off).
+ * The two move together instead of one greying the other out — `new-task.tsx` owns that pairing.
  */
 export function resolveSandboxToggle(input: {
   capability?: { state: string; version?: string; backends: readonly string[] }

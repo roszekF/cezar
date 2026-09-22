@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import {
   parseAskMarker,
   parseAskMarkerResult,
@@ -12,8 +12,10 @@ import { AUTO_END_DELAY_MS, type AgentSession } from '../core/claude-cli-runner.
 import { hostLauncher, type ProcessLauncher } from '../core/process-launcher.ts';
 import { sandboxLauncher, sandboxNameFor, type SandboxAgent } from '../core/sandbox/docker-sbx.ts';
 import {
+  commitInSandbox,
   prepareRunSandbox,
   reconcileSandboxes,
+  syncBackFromSandbox,
   sandboxAgentSpec,
   sandboxAuthHint,
   sandboxForwardKeys,
@@ -37,6 +39,7 @@ import {
   appendHandoffHeartbeat,
   followupsEnabled,
   handoffPath,
+  runImagesDir,
   sandboxRunDir,
   readHandoff,
   seedHandoffFile,
@@ -59,7 +62,7 @@ import { materializeSkillDir } from '../skills-remote.ts';
 import { seedAgentConfigLocalLayer } from '../agent-config/seed.ts';
 import { readAgentModelProvider } from '../agent-config/models.ts';
 import { loadConfig, resolveWorktreeRetention } from '../config.ts';
-import { autosaveCommit, createWorktree, resolveBaseRef, worktreeDiff, worktreeShortstat } from '../git-worktree.ts';
+import { autosaveCommit, createWorktree, resolveBaseRef, worktreeDiff, worktreeShortstat, type AutosaveReason } from '../git-worktree.ts';
 import { getHeadCommit, getRepoInfo } from '../server/git.ts';
 import { loadWorkflows } from './load.ts';
 import type { QueuedMessage, RunRecord, RunStore, StepState } from '../runs/store.ts';
@@ -1093,14 +1096,36 @@ export class RunManager {
   // ---- Docker Sandboxes (spec 2026-09-22-docker-sandboxes) ------------------------------------
 
   /**
-   * The spec a step spawns with, moved into the run's sandbox when the RECORD says so — the one
-   * gate every agent spawn (first step, later steps, Continue, restart recovery, auto-resume)
-   * passes through, so none of them can start a sandboxed run's agent on the host. A string is
-   * a step error for the run log (sign-in expired, sbx failed, unsupported backend).
+   * The autosave for THIS run. An ordinary run commits its worktree on the host. A sandboxed run
+   * cannot: the host never sees the VM's working tree, so the commit has to happen inside the VM
+   * and the result is fetched back onto the task branch (spec 2026-09-22-docker-sandboxes,
+   * § Bringing work back). Best-effort on both paths — a missed autosave is a missed recovery
+   * point, never a reason to fail a run.
    */
-  private async sandboxSpawnSpec(runId: string, backend: RunnerId, spec: AgentRunSpec): Promise<AgentRunSpec | string> {
+  private async autosaveRun(runId: string, cwd: string, reason: AutosaveReason): Promise<void> {
     const record = this.store.getRun(runId);
-    if (!record?.sandbox) return spec;
+    if (record?.sandbox && !record.sandbox.removedAt) {
+      await commitInSandbox(record, this.repoRoot, `cezar autosave (${reason})`);
+      await syncBackFromSandbox(this.repoRoot, record);
+      return;
+    }
+    if (cwd !== this.repoRoot) await autosaveCommit(cwd, reason);
+  }
+
+  /**
+   * Make sure this run's sandbox exists, and record what creating it established. THE one place
+   * that calls `prepareRunSandbox`: agent steps and check steps both route through it, so the
+   * memory cap and the `agent`/`createdAt` write-back can never apply to one and not the other.
+   * (They diverged once — a workflow whose first step was a check created the VM without
+   * recording its agent kit, which silently disarmed the mismatched-Continue refusal.)
+   * A string is a step error for the run log.
+   */
+  private async ensureRunSandbox(
+    runId: string,
+    backend: RunnerId,
+  ): Promise<{ record: RunRecord; created: boolean } | string> {
+    const record = this.store.getRun(runId);
+    if (!record?.sandbox) return 'internal: ensureRunSandbox on a run without a sandbox';
     let created: boolean;
     try {
       ({ created } = await prepareRunSandbox({
@@ -1121,12 +1146,26 @@ export class RunManager {
       });
       this.store.appendEvent(runId, { type: 'lifecycle', message: `sandbox ${record.sandbox.name} created` });
     }
+    return { record, created };
+  }
+
+  /**
+   * The spec a step spawns with, moved into the run's sandbox when the RECORD says so — the one
+   * gate every agent spawn (first step, later steps, Continue, restart recovery, auto-resume)
+   * passes through, so none of them can start a sandboxed run's agent on the host. A string is
+   * a step error for the run log (sign-in expired, sbx failed, unsupported backend).
+   */
+  private async sandboxSpawnSpec(runId: string, backend: RunnerId, spec: AgentRunSpec): Promise<AgentRunSpec | string> {
+    const record = this.store.getRun(runId);
+    if (!record?.sandbox) return spec;
+    const ready = await this.ensureRunSandbox(runId, backend);
+    if (typeof ready === 'string') return ready;
     const boxed = sandboxAgentSpec(spec, {
       name: record.sandbox.name,
-      dataDir: this.dataDir,
+      repoRoot: this.repoRoot,
       runId,
       backend: backend as SandboxAgent,
-      created,
+      created: ready.created,
     });
     if (!boxed.restartedSession) return boxed.spec;
     // The VM that held the session is gone (removed by hand, reclaimed, host rebuilt), and the
@@ -1149,16 +1188,14 @@ export class RunManager {
     const record = this.store.getRun(runId);
     if (!record?.sandbox) return { launcher: hostLauncher, env: process.env };
     const backend = record.runner ?? (await loadConfig(this.repoRoot)).defaultRunner;
-    try {
-      await prepareRunSandbox({ repoRoot: this.repoRoot, dataDir: this.dataDir, record, backend });
-    } catch (err) {
-      return `sandbox: ${err instanceof Error ? err.message : String(err)}`;
-    }
+    const ready = await this.ensureRunSandbox(runId, backend);
+    if (typeof ready === 'string') return ready;
     return {
-      launcher: sandboxLauncher(record.sandbox.name, sandboxForwardKeys()),
+      // Checks run in the VM's clone, at the repo root path — the task worktree is host-only.
+      launcher: sandboxLauncher(record.sandbox.name, sandboxForwardKeys(), { cwd: resolve(this.repoRoot) }),
       // The host env is only the value SOURCE: the launcher forwards the run's own names plus
       // `CEZ_ENV_PASSTHROUGH`, nothing else, into the VM.
-      env: { ...process.env, ...this.agentEnv(runId, false), ...sandboxTmpEnv(this.dataDir, runId), CEZ_TODOS_FILE: '' },
+      env: { ...process.env, ...this.agentEnv(runId, false), ...sandboxTmpEnv(runId), CEZ_TODOS_FILE: '' },
     };
   }
 
@@ -1295,7 +1332,7 @@ export class RunManager {
     // before the handoff journal is seeded — because its existence is what relocates the journal
     // into the one `.ai/cezar/` directory the VM mounts (`handoffPath`).
     if (input.sandbox) {
-      mkdirSync(sandboxRunDir(this.dataDir, run.id), { recursive: true });
+      mkdirSync(sandboxRunDir(run.id), { recursive: true });
       this.store.updateRun(run.id, { sandbox: { provider: 'docker-sbx', name: sandboxNameFor(run.id) } });
     }
     // The run's place in a dispatch tree (spec 2026-09-10-dispatch), written the way
@@ -2957,7 +2994,7 @@ export class RunManager {
     for (const url of urls) {
       const name = url.split('/').pop();
       if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) continue;
-      const path = join(this.dataDir, 'runs', `${runId}-images`, name);
+      const path = join(runImagesDir(this.dataDir, runId), name);
       try {
         if (isImageAttachmentName(name)) {
           const data = readFileSync(path);
@@ -3083,7 +3120,7 @@ export class RunManager {
       // Defend the join against a crafted URL: only a bare file name may be deleted.
       if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) continue;
       try {
-        rmSync(join(this.dataDir, 'runs', `${runId}-images`, name), { force: true });
+        rmSync(join(runImagesDir(this.dataDir, runId), name), { force: true });
       } catch {
         /* best effort */
       }
@@ -3498,7 +3535,7 @@ export class RunManager {
         }
       }
     }
-    this.armAutosave(state);
+    this.armAutosave(runId, state);
     if (record) seedHandoffFile(this.dataDir, record); // idempotent — normally already there
     // Registry snapshot for `/skill` expansion. `execute` loads this for the workflow's own
     // sessions; a continuation builds its OWN ActiveRun, and without this the resumed session
@@ -3859,7 +3896,7 @@ export class RunManager {
       this.recordUsagePeaks(runId);
       this.clearIdleTimer(state);
       this.clearAutosaveTimer(state);
-      if (state.cwd !== this.repoRoot) await autosaveCommit(state.cwd, 'turn end');
+      await this.autosaveRun(runId, state.cwd, 'turn end');
       this.dropActive(runId);
     }
   }
@@ -3972,7 +4009,7 @@ export class RunManager {
         if (seededConfig.length > 0) {
           emit({ type: 'note', message: `seeded personal agent config: ${seededConfig.join(', ')}` });
         }
-        this.armAutosave(state);
+        this.armAutosave(runId, state);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const error = `worktree creation failed: ${message}`;
@@ -4051,7 +4088,7 @@ export class RunManager {
       .map((url): PersistedAttachment | null => {
         const name = url.split('/').pop();
         if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) return null;
-        const path = join(this.dataDir, 'runs', `${runId}-images`, name);
+        const path = join(runImagesDir(this.dataDir, runId), name);
         return existsSync(path) ? { name, url, path } : null;
       })
       .filter((saved): saved is PersistedAttachment => saved !== null);
@@ -4180,7 +4217,7 @@ export class RunManager {
 
     // Final autosave: the branch always ends holding the finished state.
     this.clearAutosaveTimer(state);
-    if (state.cwd !== this.repoRoot) await autosaveCommit(state.cwd, 'run finalize');
+    await this.autosaveRun(runId, state.cwd, 'run finalize');
 
     const finishedAt = new Date().toISOString();
     if (state.cancelled) {
@@ -5058,7 +5095,7 @@ export class RunManager {
       // always had, a file gets `pdf`/`txt`/`md`, and both share the `pasted-<n>` numbering space
       // below so a `pasted-3.md` can never collide with a `pasted-3.png`.
       const ext = attachmentExtension(mediaType);
-      const dir = join(this.dataDir, 'runs', `${runId}-images`);
+      const dir = runImagesDir(this.dataDir, runId);
       mkdirSync(dir, { recursive: true });
       // Seed from the highest numeric suffix already on disk, NOT the file count:
       // `screenshot-*` and `pasted-*` share one numbering space, so counting would
@@ -5263,11 +5300,11 @@ export class RunManager {
 
   /** Autosave-commit the worktree every 90 s while the run lives (spec 006).
    *  Opt-in via CEZ_AUTOSAVE=1 (#471) — see periodicAutosaveEnabled. */
-  private armAutosave(state: ActiveRun): void {
+  private armAutosave(runId: string, state: ActiveRun): void {
     if (!periodicAutosaveEnabled()) return;
     if (state.cwd === this.repoRoot || state.autosaveTimer) return;
     state.autosaveTimer = setInterval(() => {
-      void autosaveCommit(state.cwd, 'periodic');
+      void this.autosaveRun(runId, state.cwd, 'periodic');
     }, AUTOSAVE_INTERVAL_MS);
     state.autosaveTimer.unref?.();
   }

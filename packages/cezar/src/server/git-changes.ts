@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { resolveTaskDiffBase, type RepointedHead } from '../git-diff-base.ts';
 import { isSafeGitRef } from '../git-refs.ts';
-import { withSandboxGitEnv } from '../core/sandbox/sandbox-git.ts';
 
 /**
  * Session git plumbing for the cockpit's Changes & Files tabs (redesign spec
@@ -38,7 +37,7 @@ function git(cwd: string, args: string[], env?: Record<string, string>): Promise
         cwd,
         maxBuffer: 32 * 1024 * 1024,
         encoding: 'utf8',
-        env: withSandboxGitEnv(cwd, env ? { ...process.env, ...env } : undefined),
+        ...(env ? { env: { ...process.env, ...env } } : {}),
       },
       (err, stdout, stderr) => resolvePromise({ ok: !err, stdout: stdout ?? '', stderr: stderr ?? '' }),
     );

@@ -17,8 +17,10 @@ import type { ProcessLauncher } from '../process-launcher.ts';
 /** The version the Phase 0 spike verified (`:ro` single-path hold-outs, `--skills`, `--pull`). */
 export const MIN_SBX_VERSION = '0.45.0';
 
-/** Flags `sbx create` must offer; a release that drops one is `unsupported-version`. */
-const REQUIRED_CREATE_FLAGS = ['--skills', '--pull', '--template'];
+/** Flags `sbx create` must offer; a release that drops one is `unsupported-version`.
+ *  `--clone` is the isolation mechanism itself (spec 2026-09-22-docker-sandboxes): without it a
+ *  sandbox would have to bind-mount the host repo, which is the model this design replaced. */
+const REQUIRED_CREATE_FLAGS = ['--skills', '--pull', '--template', '--clone'];
 
 const PROBE_TIMEOUT_MS = 5_000;
 
@@ -191,6 +193,11 @@ export interface SandboxSpec {
   memoryMb?: number;
 }
 
+/** Mount lists match when they hold the same entries, spelling and `:ro` suffix included. */
+function sameWorkspaces(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && [...a].sort().every((v, i) => v === [...b].sort()[i]);
+}
+
 /**
  * Make sure the named sandbox exists with this primary workspace. Idempotent: a sandbox a crash
  * left behind mid-create is reused when its primary workspace matches, and replaced otherwise.
@@ -203,9 +210,16 @@ export async function ensureSandbox(
   const existing = await listSandboxes(env);
   if (!existing) return { error: 'could not list sandboxes — is Docker Sandboxes signed in? Run `sbx login`' };
   const found = existing.find((s) => s.name === spec.name);
-  if (found && found.workspaces[0] === spec.workspaces[0]) return { created: false };
+  // The WHOLE mount list is compared, not just the primary workspace: sbx's filesystem rules are
+  // `allow ** read/write` and are not CLI-editable, so the mount list *is* this sandbox's security
+  // boundary. A VM left behind by an older cezar with a wider list must be replaced, not adopted.
+  if (found && sameWorkspaces(found.workspaces, spec.workspaces)) return { created: false };
   if (found) await removeSandbox(spec.name, env);
   const args = ['create', '--quiet', '--name', spec.name, '--pull', 'missing', '--skills', 'off', '--template', TEMPLATES[spec.agent]];
+  // `--clone`: the agent works on a private in-container clone and the host repo is mounted
+  // READ-ONLY, so the VM cannot write anything on the host — no gitlink, no `commondir`, no
+  // `.git/modules` to redirect (spec 2026-09-22-docker-sandboxes, § Isolation).
+  args.push('--clone');
   if (spec.memoryMb && spec.memoryMb >= 512) args.push('--memory', `${Math.floor(spec.memoryMb)}m`);
   args.push(spec.agent, ...spec.workspaces);
   const out = await runSbx(args, CREATE_TIMEOUT_MS, env);
@@ -234,7 +248,7 @@ export async function removeSandbox(name: string, env: NodeJS.ProcessEnv = proce
 export function sandboxLauncher(
   name: string,
   forward: readonly string[],
-  opts: { bin?: string; env?: NodeJS.ProcessEnv } = {},
+  opts: { bin?: string; env?: NodeJS.ProcessEnv; cwd?: string } = {},
 ): ProcessLauncher {
   const env = opts.env ?? process.env;
   return {
@@ -245,7 +259,9 @@ export function sandboxLauncher(
       const bin = opts.bin ?? requestedBin;
       const passed = forward.filter((key) => launch.env[key] !== undefined);
       const picked = Object.fromEntries(passed.map((key) => [key, launch.env[key] as string]));
-      const argv = ['exec', '-i', '-w', launch.cwd, ...passed.flatMap((key) => ['-e', key]), name, bin, ...args];
+      // `cwd` overrides the caller's: under `--clone` the agent works in the in-container clone at
+      // the REPO ROOT path, and the task worktree the caller names is not mounted in the VM at all.
+      const argv = ['exec', '-i', '-w', opts.cwd ?? launch.cwd, ...passed.flatMap((key) => ['-e', key]), name, bin, ...args];
       return spawn(resolveSbxExecutable(env), argv, { env: { ...env, ...picked } });
     },
   };

@@ -36,7 +36,7 @@ Add one seam, a **process launcher**, between the runners and `child_process`, p
 
 - A run carries `sandbox: true`. At its first agent or check step, cezar creates the VM with `sbx create`. From then on, every process the run starts goes through `sbx exec -i -w <cwd> --env-file <f> <sandbox> <bin> <args…>`, not `nodeSpawn(bin, args)`.
 - The runners' wire protocols don't change. Claude's stream-json and Codex's app-server JSON-RPC ride on the `sbx exec` client's stdio.
-- cezar's own git and `gh` work stays on the host: worktree creation, autosave, diff, commit, push, and PR creation. For sandboxed runs, every host git call goes through a helper that pins the git directories and disables repo-controlled execution (see **Host-git hardening**).
+- cezar's own git and `gh` work stays on the host: worktree creation, diff, commit, push, and PR creation. Because the VM writes nothing on the host (`--clone`), these need no special hardening — the agent has no way to redirect the host's git. Autosave is the exception and changes shape (see **Bringing work back**).
 - The planner and auto-namer stay on the host. Both run with `allowedTools: []` (`planner.ts`, `auto-name.ts:167`), so they have no tool surface to isolate.
 
 **Alternatives considered:**
@@ -45,7 +45,8 @@ Add one seam, a **process launcher**, between the runners and `child_process`, p
 |---|---|
 | Run the whole cockpit inside one sandbox | All runs share one VM, and host git and `gh` move inside too. It works today without code, so it's a README recipe. |
 | Mount the repo root as the primary workspace | This was the first draft. It lets the VM write cezar's state (`runs.json`, workflow `command`s that later run on the host), the main checkout (`package.json` scripts the user runs), and every other run's worktree. The adversarial review rated it Critical. |
-| `sbx --clone` mode | cezar's host-side autosave, live diff, "open in editor" and review gate read the worktree directly, and clone mode hides the agent's work until it's fetched. It's also rejected from inside a non-main worktree. |
+| Bind-mount `.git` read-write with `:ro` hold-outs | **This was the shipped design until Phase 1, and it had a confirmed host escape** — the hold-outs were per-run, so another run's `commondir` stayed writable and a payload planted from the VM executed on the host as the host user. A denylist over `.git/worktrees/`, which grows an entry per task, could not be made sound. Replaced by `--clone`; see **Host-git hardening — removed**. |
+| Mount only the task worktree (no repo read access) | What the `.git` bind-mount above existed to allow. `--clone` gives up read-isolation of the repo (the VM can read it, read-only) to gain write-isolation of the whole host, which is the trade the threat model wants: the agent can already read anything on the machine today. |
 | Plain Docker container per run (OpenHands-style or the Claude devcontainer) | A shared kernel is a weaker boundary, and cezar would have to build credential isolation itself. The devcontainer docs warn that the agent can exfiltrate `~/.claude`; `sbx`'s sentinel-token proxy closes exactly that hole. |
 | `sbx run` instead of `create` + `exec` | `sbx run` attaches a terminal and rewrites the agent's default flags. cezar needs a pipe it controls. kpenfound/busybees#811 reached the same conclusion independently. |
 | A generic pluggable-runtime abstraction | Only one provider exists. `ProcessLauncher` is the extension point, and a second provider implements it later. |
@@ -77,9 +78,9 @@ In short, the runners and the engine only change the object they spawn through. 
   - This is also the spawn DI point the runners lack today.
 - **`core/sandbox/docker-sbx.ts`**: the only module that runs `sbx`, resolved as `CEZ_SBX_BIN ?? 'sbx'`.
   - `detect()` is **passive**: `sbx version --json` only, cached per process. It never starts the sandbox daemon (see Zero config).
-  - `ensure(run)` is idempotent: `sbx ls --json`, then reuse the named VM if it exists with the expected workspaces, `rm --force` it if it's mismatched, and `create` it if it's missing.
+  - `ensure(run)` is idempotent: `sbx ls --json`, then reuse the named VM only when its **whole mount list** matches (the list is the security boundary, so a VM an older cezar left behind is replaced, not adopted), `rm --force` it if it's mismatched, and `create` it if it's missing.
   - `stop(name)`, `remove(name)`, and `list()`. `list()` strips the "Starting sandboxd daemon…" text printed before the JSON (docker/sbx-releases#201).
-- **`core/sandbox/sandbox-git.ts`**: `sandboxGitEnv(run)` returns the env and `-c` overrides every host git call must use for a sandboxed run's worktree (see Host-git hardening).
+- **`core/sandbox/run-sandbox.ts`**: also owns the return path — `initSandboxClone` (branch + identity in a fresh clone), `commitInSandbox` (autosave inside the VM) and `syncBackFromSandbox` (fetch the `sandbox-<name>` remote, fast-forward the task branch). There is no `sandbox-git.ts`: with `--clone` the host's git needs no hardening (see **Host-git hardening — removed**).
 
 ### Changed modules
 
@@ -104,37 +105,79 @@ In short, the runners and the engine only change the object they spawn through. 
 ### Sandbox creation
 
 ```bash
-sbx create --quiet --name cez-<runId> --pull missing --skills off \
+sbx create --quiet --name cez-<runId> --pull missing --skills off --clone \
   --template docker.io/docker/sandbox-templates:<claude-code|codex> \
   [--memory <resources.memoryLimitMb>m] \
   <claude|codex> \
-  <worktree> \
-  <repoRoot>/.git \
-  <repoRoot>/.git/config:ro  <repoRoot>/.git/hooks:ro  <repoRoot>/.git/info:ro \
-  <repoRoot>/.git/worktrees/<id>/commondir:ro  <repoRoot>/.git/worktrees/<id>/gitdir:ro \
-  <repoRoot>/.ai/cezar/sandbox/<runId> \
-  [<global skill dirs the run's skill references>:ro]
+  <repoRoot> \
+  <cezarHome>/sandbox/<runId> \
+  <cezarHome>/sandbox/<runId>/images:ro
 ```
 
-- **The primary workspace is the worktree, and the main checkout is never mounted.**
-  - A worktree's `.git` gitlink points to `<repoRoot>/.git/worktrees/<id>`. Mounting `.git` at its host path lets that resolve. Phase 0 must prove this; sbx's docs only say a worktree-only mount has *no* git access.
-  - `.git` has to be writable, because the agent commits into `objects/` and `refs/`. The files that steer execution or redirect git are held read-only through sbx's single-path `:ro` hold-outs: `config`, `hooks/`, `info/`, and this worktree's `commondir` and `gitdir`.
-  - Other worktrees' admin dirs stay writable, but host git never reads through them for this run (see Host-git hardening).
-- **Worktree is required.** `sandbox: true` with `worktree: false` is refused, because an in-place run's cwd is the main checkout.
-- **Non-`-docker` template variants.** These are unprivileged and have no inner `dockerd` or 10 GB image store. Docker-in-sandbox is a later option.
-- **`--skills off`** stops sbx from mounting its shared skills store. cezar's skills reach the agent through the system prompt and the worktree copy. Global skill directories the run references are added read-only at their absolute paths, so `skillSystemPrompt`'s reference paths resolve.
+- **`--clone` is the isolation mechanism.** The agent works on a private in-container clone of
+  the repository; the host repository is mounted **read-only** at `/run/sandbox/source` and is
+  the clone's `origin`. The VM writes nothing on the host, so there is no gitlink, `commondir`,
+  `.git/modules` config or hook path it can redirect to make host git execute something. Phase 1
+  verified this against real sbx 0.45, including `sudo` attempts.
+  - `--clone` requires `sbx create` to be run from the repository's **main checkout** — it
+    refuses a linked worktree — so a cezar booted inside someone's worktree cannot sandbox, and
+    `sandboxRunRefusal` says so.
+  - Detection therefore requires `--clone` among `sbx create`'s flags; a release without it is
+    `unsupported-version`.
+- **Nothing inside the repository is mounted.** An extra workspace at a path *inside* the cloned
+  repo replaces the clone overlay there: the VM then finds the mount and no working tree at all
+  (Phase 1 spike). This is why the run's directory — handoff journal, temp dir, pasted images —
+  lives at `<cezarHome>/sandbox/<runId>/` and not under `.ai/cezar/`.
+- **The VM can read the repository**, read-only, including uncommitted and gitignored files kept
+  there. This is a deliberate change from the first draft, which mounted only the worktree: it is
+  strictly better than the status quo, where the agent is a host process with the user's
+  permissions and unrestricted `Bash`. The threat this design addresses is **host integrity**,
+  not repository confidentiality.
+- **Worktree is required.** Not as a mount — the VM never sees it — but because it is where the
+  agent's commits land on the host for review.
+- **Non-`-docker` template variants.** Unprivileged, with no inner `dockerd` or 10 GB image
+  store. Docker-in-sandbox is a later option.
+- **`--skills off`** stops sbx from mounting its shared skills store. cezar's skills reach the
+  agent through the system prompt and the clone.
 - **`--memory`** is a hard cap inside the VM (see the memory guard in Risks).
 
-### Host-git hardening
+### Bringing work back
 
-The first draft relied on a read-only `.git/config` alone. The review showed two holes: the worktree's own `.git` gitlink file is agent-writable, and host git follows it to any git dir the agent chooses. Every host git invocation on a sandboxed run's worktree therefore runs with:
+The host cannot see the VM's working tree, so work returns as commits, not as files:
 
-- `GIT_DIR=<repoRoot>/.git/worktrees/<id>`, `GIT_COMMON_DIR=<repoRoot>/.git` and `GIT_WORK_TREE=<worktree>`, pinned from host-side knowledge (the worktree path cezar created), never read from the gitlink or `commondir`;
-- `-c core.hooksPath=/dev/null`, which also covers `core.hooksPath=.husky`-style setups that point hooks into the agent-writable worktree. Autosave already passes `--no-verify` (`git-worktree.ts:344`), and host commit and push stop running repo hooks for sandboxed runs. This is documented.
-- `-c core.fsmonitor=false`;
-- a refusal to start a sandboxed run when `extensions.worktreeConfig` is on, because `config.worktree` would be agent-writable.
+- `sbx create --clone` publishes the VM's git over a loopback daemon and registers it on the host
+  as the `sandbox-<name>` remote. `syncBackFromSandbox` fetches that remote and fast-forwards the
+  task branch in the run's worktree, so every downstream surface — the Changes tab, `diffStat`,
+  the review gate, the draft PR — keeps working on ordinary host refs.
+- A fresh clone is pointed at the task branch and given a commit identity (`initSandboxClone`);
+  the VM has no global git config of its own, and identity is not inherited through a clone.
+- **Autosave changes shape.** `autosaveCommit` runs on the host and cannot reach the VM, so a
+  sandboxed run commits *inside* the VM (`commitInSandbox`) and then syncs. The consequence is
+  honest and documented: work the agent has not committed lives only in the VM until the next
+  autosave, and is lost if the VM is destroyed before one runs.
+- cezar removes the `sandbox-<name>` remote it caused to be written into the user's `.git/config`
+  when the sandbox is disposed, and on reconcile for VMs whose run is gone.
 
-Repo config is read-only in the VM, so the only drivers that can still run are ones the user configured themselves: `filter`, `diff.textconv` or `credential.helper` from `~/.gitconfig` or the protected repo config. `.gitattributes` in the worktree can *name* a driver but can't define one.
+### Host-git hardening — removed
+
+Earlier revisions of this spec bind-mounted `<repoRoot>/.git` read-write with `:ro` hold-outs on
+`config`, `hooks/`, `info/` and the run's own `commondir`/`gitdir`, and hardened every host git
+invocation (`GIT_DIR`/`GIT_COMMON_DIR`/`GIT_WORK_TREE` pinned, `core.hooksPath=/dev/null`,
+`core.fsmonitor=false`) to survive a rewritten gitlink.
+
+**That model had a hole, confirmed against real sbx.** The hold-outs were scoped to the run's own
+worktree, so `<repoRoot>/.git/worktrees/<otherRunId>/commondir` stayed writable. Git reads
+`config` from the common dir, so redirecting another run's `commondir` at a directory the VM
+controls — its own worktree — gave that worktree an attacker-chosen `config`. The hardening did
+not cover it, because it only ever applied to *registered* (sandboxed) worktrees, while an
+ordinary run's worktree is unregistered and `autosaveCommit` runs `git status` in it on a timer.
+A payload planted from inside the VM executed on the host as the host user. `.git/modules/*/config`
+was the same class for submodule repos.
+
+`--clone` removes the mount that made any of it reachable, so `sandbox-git.ts` and its call sites
+are deleted rather than extended. The lesson is recorded here deliberately: the hold-out list was
+a **denylist over a directory that grows a new entry every time a task starts**, and the fix was
+to stop bind-mounting the directory, not to add a sixth entry.
 
 ## 📝 Data Model
 
@@ -215,7 +258,7 @@ All changes are additive.
 | Check step relies on host env (`DATABASE_URL` and similar) | The reduced env drops it, and the step fails with its own error. Docs and the run log point to `CEZ_ENV_PASSTHROUGH`. |
 | Native modules built in the VM on a macOS host | They won't load on the host. This is inherent and documented. |
 | Slow file I/O on virtiofs | Up to 5× slower builds on macOS (docker/sbx issue #31). Shown only as duration. |
-| Breaking `sbx` release (0.39→0.45 in five weeks) | `detect()` enforces a minimum version and `--help` probes for `--skills` and `:ro` hold-outs. A mismatch reports `unsupported-version`. |
+| Breaking `sbx` release (0.39→0.45 in five weeks) | `detect()` enforces a minimum version and `--help` probes for `--skills`, `--pull`, `--template` and `--clone`. A release missing any of them reports `unsupported-version` — `--clone` especially, since it *is* the isolation. |
 | sbx writes a ~21k CLAUDE.md above the workspace (#204, #432) | Claude loads it as a parent memory file. Accepted in v1 and documented. |
 
 ## 📝 Risks & Impact Review
@@ -239,7 +282,9 @@ All seven phases are implemented on branch `feat/docker-sandboxes` (fork `roszek
   - The follow-up inbox (`todos.json`) is not merged. It is simply **off** for sandboxed runs.
 - **Temp directory.** `TMPDIR`, `TEMP`, `TMP` and `CLAUDE_CODE_TMPDIR` all point at the run directory's `tmp/`. Mount parents are root-owned inside the VM, and Claude refuses a temp dir it doesn't own.
 - **Env passing.** Env reaches the VM as bare `-e NAME` flags, with values taken from the `sbx` client's own env (verified on 0.45). There is no env file.
-- **Host-git hardening.** Pinned env alone does not override a rewritten `commondir`: git's ref store still reads it. The helper therefore snapshots `commondir` and `gitdir` and **fails closed** if either changes. Hooks and fsmonitor are turned off through `GIT_CONFIG_*` env, which also reaches `gh`'s git.
+- **No host-git hardening is needed.** With `--clone` the VM cannot write the host's `.git` at all, so there is nothing for it to redirect. The helper that used to do this is deleted (see **Host-git hardening — removed**).
+- **Uncommitted work lives only in the VM** until `commitInSandbox` + `syncBackFromSandbox` run (turn end, run finalize, and the opt-in periodic autosave). Destroying the VM before a sync loses it. This is the price of write-isolating the host, and it is documented in `docs/reference.md`.
+- **cezar must run in the repo's main checkout.** `sbx create --clone` refuses a linked worktree, so `sandboxRunRefusal` refuses the run with that reason.
 - **`CEZ_SANDBOX=0`** makes `capabilities.sandbox` absent. There is no `disabled` state.
 - **Boot reconcile** stops *every* running `cez-*` VM of this repo, because at boot nothing is live yet in this process. It does not take the repo lock, and assumes one cezar process per repo.
 - **Dispatch and `cez automation`** prompts are dropped for sandboxed runs, and dispatch is refused at the route.
@@ -287,7 +332,7 @@ Each phase ships as its own PR and leaves cezar working.
    - (d) host ownership of files written when the host uid is not 1000;
    - (e) that a Claude `/login` done once carries to a new VM under `sbx exec claude -p`;
    - (f) that a worktree-primary mount plus `<repo>/.git` resolves the gitlink, and the agent can commit;
-   - (g) that the `:ro` hold-outs (`config`, `hooks/`, `info/`, `commondir`, `gitdir`) block writes while (f) still works;
+   - (g) that under `--clone` the host repo is read-only in its entirety — `.git/config`, `hooks/`, every worktree's `commondir` and the checked-out files all resist writes, including under `sudo` — while the agent can still commit in its own clone;
    - (h) per-VM memory usage readable from the CLI;
    - (i) the latency of `sbx exec true`;
    - (j) that `sbx version --json` doesn't start the daemon.
@@ -299,10 +344,17 @@ Each phase ships as its own PR and leaves cezar working.
 2. Route `claude-cli-runner.ts` and `codex-app-server-transport.ts` through `spec.launcher ?? hostLauncher`. Existing runner tests stay green, and a new test injects a fake launcher and asserts the argv.
 3. Route `runCheckStep` through a launcher, keeping `process.env` for host runs. Covered by the existing workflow tests.
 
-### Phase 2: host-git helper
+### Phase 2: the return path
 
-1. `core/sandbox/sandbox-git.ts`: pinned `GIT_DIR`/`GIT_COMMON_DIR`/`GIT_WORK_TREE`, plus `core.hooksPath=/dev/null` and `core.fsmonitor=false`. Tests: a redirected gitlink, a redirected `commondir`, a planted hook and `core.hooksPath=.husky` are all ignored.
-2. A worktree-path → run lookup. Route every host git call site through `gitFor(worktree)`, which applies the helper only when the run is sandboxed. A test enumerates `spawn`/`execFile('git'…)` sites and fails on any that bypass `gitFor`.
+1. `initSandboxClone`: point a fresh clone at the task branch and give it a commit identity.
+2. `commitInSandbox` + `syncBackFromSandbox`: commit inside the VM, then fetch the
+   `sandbox-<name>` remote on the host and fast-forward the task branch. `RunManager.autosaveRun`
+   picks host autosave or this pair from the record, so no call site decides it twice.
+3. Remove the `sandbox-<name>` remote on dispose and on reconcile, so a repo does not accumulate
+   one dead remote per task.
+
+*(Phase 2 originally specified a host-git hardening helper. Phase 1's real-sbx spike found the
+escape that made it necessary AND insufficient, and `--clone` removed the need for it entirely.)*
 
 ### Phase 3: detection
 
@@ -313,7 +365,7 @@ Each phase ships as its own PR and leaves cezar working.
 ### Phase 4: sandboxed runs, server-side
 
 1. `sandbox?: boolean` on `POST /runs` and the run record, threaded through `StartRunInput`, `ActiveRun`, persistence and queued restart. Test: the flag survives a restart of a queued run.
-2. Validation: `CEZ_SANDBOX=0`, availability, `worktree: false`, OpenCode, mixed kits, non-default profile, `extensions.worktreeConfig`. One test per refusal.
+2. Validation: `CEZ_SANDBOX=0`, availability, `worktree: false`, OpenCode, mixed kits, non-default profile, cezar running in a linked worktree. One test per refusal.
 3. The per-run scratch dir: handoff, todos and tmp paths resolved per run, the todos merge at step end, gitignore, and deletion with the run. Test: the handoff round-trips, and a malformed per-run todos entry is dropped.
 4. `ensure()` with lazy creation at the first agent or check step, using the argv from **Sandbox creation**. Tests with the fake sbx: one VM across two steps; a crash-left name is reused or recreated.
 5. `sandboxLauncher` with the env file and reduced env for agent and check steps, plus Codex `danger-full-access`. Test: the recorded argv has no env values, and the env file has no provider or `GH_*` names and is gone after spawn.

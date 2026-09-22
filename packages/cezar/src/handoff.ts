@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { cezarHomeDir } from './paths.ts';
 
 /**
  * Per-task handoff journal (spec 007): `.ai/cezar/runs/<runId>.handoff.md`,
@@ -11,19 +12,35 @@ import { dirname, join } from 'node:path';
  */
 
 /**
- * A sandboxed run's own directory (spec 2026-09-22-docker-sandboxes): the one part of
- * `.ai/cezar/` its sandbox mounts, so the journal lives here instead of `runs/`, which holds
- * every other run's files. Created by `RunManager.startRun` before the journal is seeded; its
- * existence is what marks the run's journal as relocated, so every reader and writer below
- * agrees without a registry — and without the sandbox being able to decide it, since the VM
- * never sees `.ai/cezar/sandbox/` itself, only this one run's directory inside it.
+ * A sandboxed run's own directory (spec 2026-09-22-docker-sandboxes). It lives OUTSIDE the
+ * repository, under the per-user cezar home, for a reason the Phase 1 spike made non-negotiable:
+ * a sandbox is created with `sbx create --clone <repoRoot>`, and any extra workspace mounted at
+ * a path *inside* the cloned repo replaces the clone overlay there — the VM then sees the mount
+ * and no working tree at all. So the journal cannot live under `.ai/cezar/`; it is mounted at its
+ * own path beside the clone instead.
+ *
+ * Created by `RunManager.startRun` before the journal is seeded; its existence is what marks the
+ * run's journal as relocated, so every reader and writer below agrees without a registry — and
+ * without the sandbox being able to decide it, since the VM sees only this one run's directory.
  */
-export function sandboxRunDir(dataDir: string, runId: string): string {
-  return join(dataDir, 'sandbox', runId);
+export function sandboxRunDir(runId: string): string {
+  return join(cezarHomeDir(), 'sandbox', runId);
+}
+
+/**
+ * A run's pasted-image directory. Relocates beside the handoff journal for a sandboxed run, for
+ * the same reason (`sandboxRunDir`): nothing inside the cloned repo can be mounted, so the images
+ * the agent is handed by path must live outside it. Existence of the run's sandbox directory is
+ * the single switch, exactly as it is for the journal, so writer, reader and mount agree.
+ */
+export function runImagesDir(dataDir: string, runId: string): string {
+  const scoped = sandboxRunDir(runId);
+  if (existsSync(scoped)) return join(scoped, 'images');
+  return join(dataDir, 'runs', `${runId}-images`);
 }
 
 export function handoffPath(dataDir: string, runId: string): string {
-  const scoped = sandboxRunDir(dataDir, runId);
+  const scoped = sandboxRunDir(runId);
   if (existsSync(scoped)) return join(scoped, 'handoff.md');
   return join(dataDir, 'runs', `${runId}.handoff.md`);
 }

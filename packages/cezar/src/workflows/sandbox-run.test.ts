@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { unregisterSandboxedWorktree } from '../core/sandbox/sandbox-git.ts';
+import { cezarHomeDir } from '../paths.ts';
 import { RunStore } from '../runs/store.ts';
 import { RunManager } from './run.ts';
 import type { WorkflowDef } from './types.ts';
@@ -101,13 +101,14 @@ describe('RunManager — a sandboxed run (fake sbx)', () => {
     expect(run?.status).not.toBe('failed');
     expect(run?.sandbox?.createdAt).toBeDefined();
 
-    // Both steps went through `sbx exec` in this run's sandbox, in the worktree.
+    // Both steps went through `sbx exec` in this run's sandbox, in the VM's clone — which sits
+    // at the REPO ROOT path, because the task worktree is a host-side artifact and is not mounted.
     const ran = execs();
     expect(ran.map((e) => e.name)).toEqual(ran.map(() => name));
     expect(ran.some((e) => e.bin === 'bash' && e.args.join(' ').includes('check-ran'))).toBe(true);
-    expect(ran.some((e) => e.bin !== 'bash')).toBe(true); // the agent
+    expect(ran.some((e) => e.bin !== 'bash' && e.bin !== 'git')).toBe(true); // the agent
     for (const exec of ran) {
-      expect(exec.cwd).toBe(run?.worktreePath);
+      expect(exec.cwd).toBe(root);
       expect(exec.env.GH_TOKEN).toBeUndefined();
       expect(
         Object.keys(exec.env).every((k) =>
@@ -115,22 +116,25 @@ describe('RunManager — a sandboxed run (fake sbx)', () => {
         ),
       ).toBe(true);
     }
-    // The check saw the sandbox, not the host.
-    expect(readFileSync(join(run?.worktreePath ?? '', 'check-ran'), 'utf8')).toBe(`${name}|none|postgres://check`);
+    // The check saw the sandbox, not the host. It runs in the VM's clone, at the repo root path.
+    expect(readFileSync(join(root, 'check-ran'), 'utf8')).toBe(`${name}|none|postgres://check`);
 
-    // The journal lives in the one `.ai/cezar/` directory the VM mounts.
-    const agent = ran.find((e) => e.bin !== 'bash');
-    expect(agent?.env.CEZ_HANDOFF_FILE).toBe(join(root, '.ai/cezar/sandbox', record.id, 'handoff.md'));
+    // The journal lives OUTSIDE the repo: nothing inside the cloned path can be mounted.
+    // `git` execs are the clone's one-time setup (identity + branch checkout), not a step.
+    expect(ran.filter((e) => e.bin === 'git').map((e) => e.args[0])).toEqual(['config', 'config', 'checkout']);
+    const agent = ran.find((e) => e.bin !== 'bash' && e.bin !== 'git');
+    expect(agent?.env.CEZ_HANDOFF_FILE).toBe(join(cezarHomeDir(), 'sandbox', record.id, 'handoff.md'));
     expect(existsSync(agent?.env.CEZ_HANDOFF_FILE ?? '')).toBe(true);
 
     // One VM, mounted per the spec, stopped once the run settled.
     await waitFor(() => boxes().find((b) => b.name === name)?.status === 'stopped', 'the VM to stop');
     const box = boxes().find((b) => b.name === name);
     expect(boxes()).toHaveLength(1);
-    expect(box?.workspaces[0]).toBe(run?.worktreePath);
-    expect(box?.workspaces).not.toContain(root);
+    // The repo is the clone SOURCE and the primary workspace; nothing under it is mounted.
+    expect(box?.workspaces[0]).toBe(root);
+    expect(box?.workspaces).not.toContain(run?.worktreePath);
+    expect(box?.workspaces.some((w) => w.startsWith(join(root, '.git')))).toBe(false);
     store.flush();
-    if (run?.worktreePath) unregisterSandboxedWorktree(run.worktreePath);
   }, 30_000);
 
   it('fails the step with a readable error when the sandbox cannot be created', async () => {
@@ -146,7 +150,6 @@ describe('RunManager — a sandboxed run (fake sbx)', () => {
       expect(execs()).toEqual([]);
       store.flush();
       const wt = store.getRun(record.id)?.worktreePath;
-      if (wt) unregisterSandboxedWorktree(wt);
     } finally {
       delete process.env.FAKE_SBX_BROKEN;
     }

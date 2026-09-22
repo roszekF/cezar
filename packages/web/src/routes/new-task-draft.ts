@@ -37,6 +37,9 @@ export interface NewTaskDraft {
   /** Autonomous (#autonomous): true never pauses for the user. null → remembered
    *  `lastAutonomous` / default (off). */
   autonomous: boolean | null
+  /** Sandbox (spec 2026-09-22-docker-sandboxes): run in a Docker Sandbox microVM. null →
+   *  remembered `lastSandbox` / off. */
+  sandbox: boolean | null
   /** Follow-up generation is default-on. null → remembered value / on. */
   generateFollowups: boolean | null
   /** The Dispatch toggle (spec 2026-09-10-dispatch): this task fans work out to subtasks.
@@ -133,6 +136,7 @@ const EMPTY: NewTaskDraft = {
   planFirst: false,
   worktree: null,
   autonomous: null,
+  sandbox: null,
   generateFollowups: null,
   dispatch: null,
 }
@@ -168,6 +172,7 @@ function normalize(raw: unknown): NewTaskDraft {
     planFirst: obj.planFirst === true,
     worktree: typeof obj.worktree === 'boolean' ? obj.worktree : null,
     autonomous: typeof obj.autonomous === 'boolean' ? obj.autonomous : null,
+    sandbox: typeof obj.sandbox === 'boolean' ? obj.sandbox : null,
     generateFollowups:
       typeof obj.generateFollowups === 'boolean' ? obj.generateFollowups : null,
     dispatch: normalizeDispatchIntent(obj.dispatch),
@@ -270,4 +275,36 @@ export function resetDraft(): void {
   } catch {
     // ignore
   }
+}
+
+/**
+ * The Sandbox toggle (spec 2026-09-22-docker-sandboxes). Shown only when the server found `sbx`
+ * (`capabilities.sandbox`); disabled, with the reason, for a run the server would refuse — the
+ * same rules as `sandboxRunRefusal`, so the composer never offers what submit would reject.
+ */
+export function resolveSandboxToggle(input: {
+  capability?: { state: string; version?: string; backends: readonly string[] }
+  hasGit: boolean
+  worktreeOn: boolean
+  runner: string
+  agentProfile: string | null
+  dispatchOn: boolean
+}): { shown: boolean; disabledReason?: string } {
+  const { capability } = input
+  if (!capability) return { shown: false }
+  const disabledReason =
+    capability.state !== 'available'
+      ? `This Docker Sandboxes (${capability.version ?? 'sbx'}) is not supported — update it and restart cezar`
+      : !input.hasGit
+        ? 'Sandboxed runs need a git repository'
+        : !input.worktreeOn
+          ? 'Sandboxed runs need a worktree — the sandbox mounts it, never the main checkout'
+          : !capability.backends.includes(input.runner)
+            ? 'Sandboxed runs support Claude and Codex only'
+            : input.agentProfile
+              ? 'Sandboxed runs use the sandbox login — clear the account override'
+              : input.dispatchOn
+                ? 'A sandboxed task cannot dispatch: the sandbox cannot reach the cockpit'
+                : undefined
+  return disabledReason ? { shown: true, disabledReason } : { shown: true }
 }

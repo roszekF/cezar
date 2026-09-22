@@ -15,6 +15,7 @@ import {
   prepareRunSandbox,
   reconcileSandboxes,
   sandboxAgentSpec,
+  sandboxAuthHint,
   sandboxForwardKeys,
   sandboxTmpEnv,
   stopRunSandbox,
@@ -1110,7 +1111,9 @@ export class RunManager {
         memoryMb: this.semaphore.memoryLimitMb() ?? undefined,
       }));
     } catch (err) {
-      return `sandbox: ${err instanceof Error ? err.message : String(err)}`;
+      const message = err instanceof Error ? err.message : String(err);
+      const hint = sandboxAuthHint(message);
+      return `sandbox: ${message}${hint ? ` — ${hint}` : ''}`;
     }
     if (created) {
       this.store.updateRun(runId, { sandbox: { ...record.sandbox, createdAt: new Date().toISOString(), removedAt: undefined } });
@@ -1151,8 +1154,17 @@ export class RunManager {
     }
     return {
       launcher: sandboxLauncher(record.sandbox.name, sandboxForwardKeys()),
-      env: { ...this.agentEnv(runId, false), ...sandboxTmpEnv(this.dataDir, runId), CEZ_TODOS_FILE: '' },
+      // The host env is only the value SOURCE: the launcher forwards the run's own names plus
+      // `CEZ_ENV_PASSTHROUGH`, nothing else, into the VM.
+      env: { ...process.env, ...this.agentEnv(runId, false), ...sandboxTmpEnv(this.dataDir, runId), CEZ_TODOS_FILE: '' },
     };
+  }
+
+  /** The error, with how to fix a sandbox login appended when that is what went wrong. */
+  private withSandboxHint(runId: string, message: string): string {
+    if (!this.store.getRun(runId)?.sandbox) return message;
+    const hint = sandboxAuthHint(message);
+    return hint ? `${message} — ${hint}` : message;
   }
 
   /** A sandboxed run cannot reach the cockpit, so it is never told about `cez task` / `cez automation`. */
@@ -3553,7 +3565,7 @@ export class RunManager {
       }
       this.store.appendEvent(runId, { ...event, stepId });
       if (event.type === 'error') {
-        sessionError ??= event.message;
+        sessionError ??= this.withSandboxHint(runId, event.message);
         state.session?.interrupt();
         return;
       }
@@ -4328,7 +4340,7 @@ export class RunManager {
       }
       emit({ ...event, stepId: step.id });
       if (event.type === 'error') {
-        sessionError ??= event.message;
+        sessionError ??= this.withSandboxHint(runId, event.message);
         state.session?.interrupt();
         return;
       }

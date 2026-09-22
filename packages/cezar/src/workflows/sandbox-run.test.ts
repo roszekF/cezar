@@ -17,7 +17,7 @@ import type { WorkflowDef } from './types.ts';
  */
 const fakeSbx = fileURLToPath(new URL('../core/__fixtures__/sbx/fake-sbx.mjs', import.meta.url));
 const GIT_ID = ['-c', 'user.name=test', '-c', 'user.email=test@local'];
-const KEYS = ['CEZ_SBX_BIN', 'FAKE_SBX_STATE', 'FAKE_SBX_EXEC_LOG', 'CEZ_DRY_RUN', 'GH_TOKEN', 'CEZ_AUTONAME'] as const;
+const KEYS = ['CEZ_SBX_BIN', 'FAKE_SBX_STATE', 'FAKE_SBX_EXEC_LOG', 'CEZ_DRY_RUN', 'GH_TOKEN', 'CEZ_AUTONAME', 'CEZ_ENV_PASSTHROUGH', 'DATABASE_URL'] as const;
 
 interface Exec {
   name: string;
@@ -56,6 +56,9 @@ describe('RunManager — a sandboxed run (fake sbx)', () => {
     process.env.CEZ_AUTONAME = '0';
     // A host secret the sandbox must never see.
     process.env.GH_TOKEN = 'ghp_host_secret';
+    // …and one the user explicitly lets through for check steps.
+    process.env.CEZ_ENV_PASSTHROUGH = 'DATABASE_URL';
+    process.env.DATABASE_URL = 'postgres://check';
   });
 
   afterEach(() => {
@@ -80,7 +83,8 @@ describe('RunManager — a sandboxed run (fake sbx)', () => {
         { id: 'work', prompt: 'do the task: {{task}}' },
         {
           id: 'check',
-          command: 'node -e "require(\'node:fs\').writeFileSync(\'check-ran\', process.env.SANDBOX_NAME + \'|\' + (process.env.GH_TOKEN ?? \'none\'))"',
+          command:
+            'node -e "require(\'node:fs\').writeFileSync(\'check-ran\', process.env.SANDBOX_NAME + \'|\' + (process.env.GH_TOKEN ?? \'none\') + \'|\' + process.env.DATABASE_URL)"',
         },
       ],
     };
@@ -105,10 +109,14 @@ describe('RunManager — a sandboxed run (fake sbx)', () => {
     for (const exec of ran) {
       expect(exec.cwd).toBe(run?.worktreePath);
       expect(exec.env.GH_TOKEN).toBeUndefined();
-      expect(Object.keys(exec.env).every((k) => ['PATH', 'HOME', 'CEZ_HANDOFF_FILE', 'CEZ_TASK_ID', 'CEZ_TODOS_FILE', 'TMPDIR', 'TEMP', 'TMP', 'CLAUDE_CODE_TMPDIR'].includes(k))).toBe(true);
+      expect(
+        Object.keys(exec.env).every((k) =>
+          ['PATH', 'HOME', 'CEZ_HANDOFF_FILE', 'CEZ_TASK_ID', 'CEZ_TODOS_FILE', 'TMPDIR', 'TEMP', 'TMP', 'CLAUDE_CODE_TMPDIR', 'DATABASE_URL'].includes(k),
+        ),
+      ).toBe(true);
     }
     // The check saw the sandbox, not the host.
-    expect(readFileSync(join(run?.worktreePath ?? '', 'check-ran'), 'utf8')).toBe(`${name}|none`);
+    expect(readFileSync(join(run?.worktreePath ?? '', 'check-ran'), 'utf8')).toBe(`${name}|none|postgres://check`);
 
     // The journal lives in the one `.ai/cezar/` directory the VM mounts.
     const agent = ran.find((e) => e.bin !== 'bash');

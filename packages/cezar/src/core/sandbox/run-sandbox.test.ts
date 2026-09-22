@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SandboxCapability } from '@open-mercato/cezar-contract';
 import { listSandboxes, sandboxLauncher } from './docker-sbx.js';
 import { sandboxRunRefusal, type SandboxRunRequest } from './run-policy.js';
-import { prepareRunSandbox, reconcileSandboxes, sandboxAgentSpec, sandboxForwardKeys } from './run-sandbox.js';
+import { prepareRunSandbox, reconcileSandboxes, sandboxAgentSpec, sandboxAuthHint, sandboxForwardKeys } from './run-sandbox.js';
 import { sandboxGitEnv, unregisterSandboxedWorktree } from './sandbox-git.js';
 
 const fakeSbx = fileURLToPath(new URL('../__fixtures__/sbx/fake-sbx.mjs', import.meta.url));
@@ -182,5 +182,21 @@ describe('sandboxAgentSpec', () => {
     const fresh = sandboxAgentSpec(base, { name: `cez-${RUN_ID}`, dataDir, runId: RUN_ID, backend: 'claude', created: true });
     expect(fresh.restartedSession).toBe(true);
     expect(fresh.spec.resume).toBe(false);
+  });
+});
+
+describe('sandboxAuthHint', () => {
+  it.each([
+    ['Not logged in · Please run /login', /sbx run claude.*\/login/],
+    ['OAuth token has expired', /sbx run claude/],
+    ['unexpected status 401 Unauthorized from api.openai.com', /sbx secret set openai --oauth/],
+    ['sbx create failed: error: Not authenticated to Docker', /`sbx login`/],
+  ])('maps %j to a fix', (message, hint) => {
+    expect(sandboxAuthHint(message)).toMatch(hint);
+  });
+
+  it('leaves every other error alone', () => {
+    expect(sandboxAuthHint('rate limited, retry later')).toBeUndefined();
+    expect(sandboxAuthHint('npm test failed with exit code 1')).toBeUndefined();
   });
 });

@@ -759,6 +759,7 @@ const uiStateSchema = z
       .optional(),
     lastWorktree: z.boolean().optional(),
     lastAutonomous: z.boolean().optional(),
+    lastSandbox: z.boolean().optional(),
     lastGenerateFollowups: z.boolean().optional(),
     // Skill selection frequency (#408): name → times chosen, incremented on a successful run
     // start from EITHER composer (`/new`'s SourcePill and the follow-up `SkillsPicker`). Drives

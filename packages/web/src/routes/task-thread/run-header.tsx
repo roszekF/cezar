@@ -781,6 +781,19 @@ function MetaRow({
     )
   }
   if (run.diffStat) parts.push(<DiffStatLabel key="diff" stat={run.diffStat} />)
+  // Docker Sandbox (spec 2026-09-22-docker-sandboxes): while the run holds one.
+  if (run.sandbox && !run.sandbox.removedAt) {
+    parts.push(
+      <span
+        key="sandbox"
+        data-slot="sandbox-badge"
+        title={`Runs in Docker Sandbox ${run.sandbox.name} — the agent sees only this task’s worktree`}
+        className="inline-flex h-5 items-center rounded border border-border px-1.5 text-[11px] text-muted-foreground"
+      >
+        sandboxed
+      </span>,
+    )
+  }
   if (run.automation) {
     // Provenance is history and is always shown; only the LINK is gated. Following it with the
     // capability off would land on the disabled `/automations` state, which says nothing about

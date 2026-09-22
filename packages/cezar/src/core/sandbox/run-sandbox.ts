@@ -187,3 +187,21 @@ export async function reconcileSandboxes(
   }
   return outcome;
 }
+
+/**
+ * A sandbox has its OWN logins (spec Q5), so an agent that is signed in on the host can be signed
+ * out in its VM. Recognize the backends' "not signed in" errors and say how to fix it once, for
+ * every future sandbox. Undefined when the message is anything else.
+ */
+export function sandboxAuthHint(message: string): string | undefined {
+  if (/not logged in|please run \/login|oauth token (has )?expired/i.test(message)) {
+    return 'this task runs in a Docker Sandbox, which has its own Claude login — log in once for all sandboxes: run `sbx run claude` in any folder, type /login, then exit';
+  }
+  if (/(openai|codex|chatgpt)/i.test(message) && /(401|unauthori[sz]ed|not (logged|signed) in|login)/i.test(message)) {
+    return 'this task runs in a Docker Sandbox, which has its own Codex login — sign in once for all sandboxes: `sbx secret set openai --oauth`';
+  }
+  if (/not authenticated to docker|sbx login/i.test(message)) {
+    return 'Docker Sandboxes is signed out — run `sbx login`, then Continue';
+  }
+  return undefined;
+}

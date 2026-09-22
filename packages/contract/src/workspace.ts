@@ -160,6 +160,8 @@ export const uiStateSchema = z.looseObject({
   lastWorktree: z.boolean().optional(),
   /** The last autonomous choice — remembered like `lastWorktree`. Absent → off. */
   lastAutonomous: z.boolean().optional(),
+  /** The last Sandbox choice (spec 2026-09-22-docker-sandboxes). Absent → off. */
+  lastSandbox: z.boolean().optional(),
   /** Whether new runs should ask agents to append follow-up work. Absent → on. */
   lastGenerateFollowups: z.boolean().optional(),
   /** Skill selection frequency (#408): name → times chosen, across BOTH composers. */

@@ -41,6 +41,7 @@
 - 📱&nbsp;Fully responsive. Start and review tasks from your phone.
 - 🔀&nbsp;Every task gets its own git worktree, so several agents can work at the same time. Extra tasks wait in a queue.
 - 🤖&nbsp;Turn on **Autonomous** and a run never stops to ask. It just finishes.
+- 📦&nbsp;Turn on **Sandbox** and the task runs in its own [Docker Sandbox](docs/reference.md#sandboxed-runs-docker-sandboxes) microVM that sees only its worktree.
 - 📡&nbsp;Watch it work live: agent text, tool calls, tokens and cost.
 - 🏁&nbsp;Run the same task ×2 or ×3, compare the diffs and keep the best one.
 - 🧩&nbsp;Skills are Markdown files and workflows are short YAML files. Mix agents per step.
@@ -144,6 +145,7 @@ The [reference](docs/reference.md) covers everything else:
 [configuration](docs/reference.md#configuration-optional),
 [environment variables](docs/reference.md#how-it-runs-agents),
 [agent backends](docs/reference.md#coding-agent-backends),
+[sandboxed runs](docs/reference.md#sandboxed-runs-docker-sandboxes),
 [multiple projects](docs/reference.md#multiple-projects-one-cockpit),
 [remote access](docs/reference.md#remote-access-host-cezar-on-a-server) and
 [local development](docs/reference.md#local-development).

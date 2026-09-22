@@ -101,3 +101,46 @@ describe.skipIf(!REAL)('real Docker Sandbox isolation', () => {
     expect(log).toMatch(/autosave/);
   }, 300_000);
 });
+
+/**
+ * The whole feature end to end: the real engine, a real sandbox, the real Claude CLI inside it.
+ * Spends a little of the signed-in Claude quota, so it needs its own opt-in on top of the suite's:
+ * `CEZ_TEST_REAL_SBX_AGENT=1`.
+ */
+describe.skipIf(!REAL || process.env.CEZ_TEST_REAL_SBX_AGENT !== '1')('real Docker Sandbox — a sandboxed run with real Claude', () => {
+  it('the agent edits its worktree inside the VM, the check step runs there too, and the VM stops', async () => {
+    const { RunStore } = await import('../../runs/store.js');
+    const { RunManager } = await import('../../workflows/run.js');
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), 'cez-real-sbx-run-')));
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+    execFileSync('git', [...IDENTITY, 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo });
+    const store = RunStore.open(join(repo, '.ai/cezar'));
+    const manager = new RunManager(store, repo);
+    const record = manager.startRun(
+      {
+        name: 'real-sbx-e2e',
+        source: 'built-in',
+        steps: [
+          { id: 'work', prompt: 'Create a file named hello.txt in the current directory containing exactly the word sandboxed. Do nothing else.' },
+          { id: 'check', command: 'test "$(cat hello.txt)" = sandboxed && test -n "$SANDBOX_NAME" && echo "checked in $SANDBOX_NAME"' },
+        ],
+      },
+      { task: 'real sandbox e2e', sandbox: true, autonomous: true },
+    );
+    // eslint-disable-next-line no-console
+    console.log(`[real-sbx] run ${record.id} in ${repo} — remove afterwards with: sbx rm --force cez-${record.id}`);
+    const deadline = Date.now() + 8 * 60_000;
+    while (!['done', 'failed', 'review', 'cancelled'].includes(store.getRun(record.id)?.status ?? '') && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    const run = store.getRun(record.id);
+    const notes = store.readEvents(record.id).filter((e) => e.type === 'check-output' || e.type === 'lifecycle' || e.type === 'error');
+    // eslint-disable-next-line no-console
+    console.log('[real-sbx] events:', JSON.stringify(notes.map((e) => ({ type: e.type, text: (e as { text?: string }).text, message: (e as { message?: string }).message }))));
+    expect(run?.error).toBeUndefined();
+    expect(['done', 'review']).toContain(run?.status);
+    expect(readFileSync(join(run?.worktreePath ?? '', 'hello.txt'), 'utf8').trim()).toBe('sandboxed');
+    expect(JSON.stringify(notes)).toContain(`checked in cez-${record.id}`);
+    store.flush();
+  }, 600_000);
+});

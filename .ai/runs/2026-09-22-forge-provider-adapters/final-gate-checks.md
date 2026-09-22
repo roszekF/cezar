@@ -64,3 +64,26 @@ Two reviewers covered the diff (100 files, ~8 500 insertions): server/forge + ro
 - Each forge route spawns `getRepoInfo` (3 `git` processes) per request; `/github/ref-status` is polled on an interval.
 - GitLab thread assembly can spend up to 2× the GitHub timeline budget (three loops, one budget each).
 - `handoff.ts`'s agent-facing marker instruction still says "GitHub pull request or issue" on a GitLab project (copy only; markers are numeric).
+
+## Second review pass + Phase 5 fixes — 2026-09-22T19:46:25Z
+
+An independent second review of the finished branch (two reviewers, fresh worktree at `e7205fae`) found **no blockers and no majors in the diff**, and verified all nine first-pass fixes as real and test-covered. It did find one **blocker in the gate itself** and ten minors/nits, all now fixed as Phase 5 (`e280b9a8`..`2347212c`):
+
+| Step | Severity | Fix |
+|---|---|---|
+| 5.1 | blocker (gate red) | `automations/store.ts` reclaimed a lease only when its age strictly exceeded the window, so `acquireLease(0)` missed a same-millisecond lock — `>=` now, and the test drives the injected clock (5/5 green; it failed ~1 in 3 before, on `main` too) |
+| 5.2 | minor | `parseRemote` rejects a malformed host (spaces/newlines) instead of carrying raw bytes into `origin` → `repoUrl`; the documented web mirror moved in the same commit |
+| 5.3 | minor | the `glab` probe's two reads share one budget (worst case back to 2.5 s in the health snapshot) |
+| 5.4 | minor | GitLab diff counting no longer drops content lines that begin `---`/`+++` (the fixtures show GitLab sends hunks only) |
+| 5.5 | minor | discovery reads indented `Logged in to <host>` lines too, and warns once when a probe that ran named no hosts |
+| 5.6 | nit | non-null assertions removed from the GitLab adapter; `checkout.ts` imports the glab hint instead of duplicating it |
+| 5.7 | minor | the bookmarklet matches `http` on-prem GitLab hosts (the third copy of the URL shape, which 4.4-review-fix had fixed only in `runs/store.ts`) |
+| 5.8 | minor | `gitlab.com` is seeded only for a registered GitLab project, so a GitHub-only workspace's launcher is byte-identical again |
+| 5.9 | minor | the #945 foreign-reference guard is host-aware: a mirror instance sharing a project path no longer has its merge request adopted |
+| 5.10 | minor | reference-status chips name the right forge (a GitLab task no longer reads "Checking GitHub…") |
+| 5.11 | minor | three inaccurate claims corrected in BC § "Second forge" (merge answers 409 `{error}`; `repoUrl` differs for an `http://github.com` remote; a third 400-text change) |
+| 5.12 | minor | the spec is carried on this branch, so the ~112 code comments and the two shipped docs that cite it resolve |
+
+**Gate after Phase 5:** typecheck ✅ · `npm test` ✅ **398 files, 7 709 / 7 709** · `test:unit` ✅ 36/36 · `build` ✅ · `test:package` ✅ 16/16. The previously flaky lease test is deterministic now.
+
+**Escalated, not fixed (needs its own issue):** adding any `useProjects()` subscriber inside `TasksOverviewRoute` makes two "registry and health both fail" cases in `packages/web/src/routes.test.tsx` spin on `scope-resolving` forever — reproduced with a bare `void useProjects()`, so it is pre-existing scope-resolution fragility, not Step 5.10's code. 5.10 therefore mounts the forge scope once in `AppShellContainer`; a surface rendered outside the app shell falls back to GitHub copy.

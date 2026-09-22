@@ -67,3 +67,9 @@
 
 ## 2026-09-22T18:36:59Z — run completed
 - PR roszekF/cezar#1 flipped to ready; labels review/feature/needs-qa/priority-medium/risk-high; review + summary posted. Lock released.
+
+## 2026-09-22T19:46:25Z — second review pass and Phase 5
+- Independent second review (2 reviewers, fresh worktree): no blockers/majors in the diff; the 9 first-pass fixes verified real. One blocker in the GATE (pre-existing automations lease flake, red on main too) + 10 minors/nits.
+- Phase 5 (5.1..5.12, e280b9a8..2347212c) fixed all of them; gate re-run fully green (7 709/7 709), lease test 5/5.
+- The implementation branch now carries the spec (5.12) because this fork has no spec PR to merge.
+- Escalated: routes.test.tsx scope-resolution fragility blocks a useProjects() subscriber in TasksOverviewRoute — pre-existing, needs its own issue.

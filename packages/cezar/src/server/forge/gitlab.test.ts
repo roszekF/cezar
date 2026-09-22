@@ -205,9 +205,8 @@ describe('GitLab driver — skeleton members (later steps implement them)', () =
     vi.unstubAllEnvs();
   });
 
-  it('has no links yet, and refuses merge-request creation', async () => {
+  it('still refuses merge-request creation (Step 4.1 implements it)', async () => {
     const driver = createGitlabDriver(freshRoot(), parsed());
-    expect(driver.viewUrl('repo', '')).toBeNull();
     expect(
       await driver.createPR({ repoRoot: '/repo', run: {} as RunRecord, handoffText: '' }),
     ).toEqual({ ok: false, error: 'Merge request creation is not implemented yet for GitLab' });
@@ -1434,5 +1433,55 @@ describe('GitLab driver — searchItems', () => {
     expect(data.items).toHaveLength(1);
     expect(data.items[0]?.number).toBe(1);
     expect(execFileMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---- viewUrl (Step 3.7) --------------------------------------------------------------------------
+// Base is the cached `web_url` from a successful `detect()` probe (exact even on a non-root
+// instance — Minor 5, spec 2026-08-10-forge-provider-adapters), falling back to `origin + path`
+// (Step 2.3) when nothing has been probed yet. `/-/` is GitLab's own path grammar. Branch names
+// with slashes are encoded per segment, mirroring the GitHub driver's viewUrl.
+
+describe('GitLab driver — viewUrl', () => {
+  beforeEach(() => {
+    vi.stubEnv('CEZ_DRY_RUN', '');
+    execFileMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['repo', 'x', 'https://gitlab.com/acme/demo'],
+    ['issue', 8564, 'https://gitlab.com/acme/demo/-/issues/8564'],
+    ['pr', 3950, 'https://gitlab.com/acme/demo/-/merge_requests/3950'],
+    ['branch', 'feat/a b', 'https://gitlab.com/acme/demo/-/tree/feat/a%20b'],
+    ['commit', 'abc1234', 'https://gitlab.com/acme/demo/-/commit/abc1234'],
+  ] as const)('%s → %s (from origin + path, before any probe)', (kind, ref, expected) => {
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(driver.viewUrl(kind, ref)).toBe(expected);
+  });
+
+  it('prefers the cached web_url once a probe has run — exact on a non-root instance', async () => {
+    glabOk(JSON.stringify({ web_url: 'https://intranet/gitlab/group/repo', path_with_namespace: 'group/repo' }));
+    const root = freshRoot();
+    const remote = parseRemote('https://intranet/gitlab/group/repo.git');
+    if (!remote) throw new Error('fixture remote must parse');
+    const driver = createGitlabDriver(root, remote);
+    await driver.detect();
+    expect(driver.viewUrl('issue', 1)).toBe('https://intranet/gitlab/group/repo/-/issues/1');
+  });
+
+  it('falls back to origin + path on a non-root instance before any probe', () => {
+    const remote = parseRemote('https://intranet/gitlab/group/repo.git');
+    if (!remote) throw new Error('fixture remote must parse');
+    const driver = createGitlabDriver(freshRoot(), remote);
+    expect(driver.viewUrl('pr', 7)).toBe('https://intranet/gitlab/group/repo/-/merge_requests/7');
+  });
+
+  it('answers null when neither the cache nor a parsed origin/path is known', () => {
+    const driver = createGitlabDriver(freshRoot(), { host: 'x', owner: 'x', repo: 'x', path: '', origin: '' });
+    expect(driver.viewUrl('repo', 'x')).toBeNull();
   });
 });

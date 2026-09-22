@@ -42,8 +42,10 @@ import type {
  * adds `listChecks` (per-MR pipeline glyphs) and `prStatus` (the branch's newest merge request).
  * Step 3.5 adds `prDiff` — bounded file changes, forge-neutral caps (`forge/limits.ts`). Step 3.6
  * adds `searchItems` — the open-only list tier's escape hatch into every state, mirroring GitHub's
- * `searchGithubItems` (#730). `refStatus` and the merge-panel capabilities (`prMergeState`,
- * `mergePR`) stay absent for good (spec Non-goals) — the routes already degrade in the payload.
+ * `searchGithubItems` (#730). Step 3.7 adds `viewUrl` — GitLab's own `/-/` path grammar, based off
+ * `gitlabWebBase` (the cached `web_url`, falling back to `origin` + `path`). `refStatus` and the
+ * merge-panel capabilities (`prMergeState`, `mergePR`) stay absent for good (spec Non-goals) — the
+ * routes already degrade in the payload.
  */
 
 /** The ENOENT hint (spec § Edge Cases — glab not installed). A literal rather than
@@ -88,6 +90,17 @@ export function gitlabProjectWebUrl(repoRoot: string): string | null {
 /** The project's `path_with_namespace` as `glab` last reported it for `repoRoot`, or null. */
 export function gitlabProjectPath(repoRoot: string): string | null {
   return projectInfo.get(repoRoot)?.pathWithNamespace ?? null;
+}
+
+/** The project's web root: the cached `web_url` from a successful probe (exact even on a
+ *  non-root instance — Minor 5, spec 2026-08-10-forge-provider-adapters), or `origin + path`
+ *  (Step 2.3) when nothing has been probed yet. Null only when neither is known. Shared by
+ *  `listComments` (Step 3.3, note/timeline URLs) and `viewUrl` (Step 3.7) so the two paths can
+ *  never disagree about where "this project" lives; a trailing slash is stripped either way. */
+function gitlabWebBase(repoRoot: string, parsed: ParsedRemote): string | null {
+  const cached = gitlabProjectWebUrl(repoRoot);
+  const base = cached ?? (parsed.origin && parsed.path ? `${parsed.origin}/${parsed.path}` : null);
+  return base ? base.replace(/\/+$/, '') : null;
 }
 
 function glab(repoRoot: string, args: string[], timeout = 15_000): Promise<string> {
@@ -567,7 +580,9 @@ async function fetchGitlabComments(
     return { available: false, reason: 'glab api notes returned an unexpected response', comments: [] };
   }
 
-  const urlBase = gitlabProjectWebUrl(repoRoot) ?? `${parsed.origin}/${parsed.path}`;
+  // Step 3.7 factors this out into `gitlabWebBase`, shared with `viewUrl` — same fallback chain,
+  // no behaviour change here (the shared helper always resolves for a real parsed remote).
+  const urlBase = gitlabWebBase(repoRoot, parsed) ?? `${parsed.origin}/${parsed.path}`;
   const commentRows = notes.filter((n) => !n.system);
   const systemNoteRows = notes.filter((n) => n.system);
 
@@ -1068,7 +1083,25 @@ export function createGitlabDriver(repoRoot: string, parsed: ParsedRemote): Forg
     // The branch's open/merged/closed merge request, or null when none (or glab is down).
     prStatus: (branch) => fetchGitlabPrStatus(repoRoot, branch),
 
-    // Step 3.7 builds links from the cached `web_url` (falling back to origin + path).
-    viewUrl: () => null,
+    // GitLab's own `/-/` path grammar (Step 3.7): base is the cached `web_url` (exact on a
+    // non-root instance), falling back to origin + path — mirrors the GitHub driver's viewUrl.
+    viewUrl: (kind, ref) => {
+      const base = gitlabWebBase(repoRoot, parsed);
+      if (!base) return null;
+      // Branch names may contain '/' — encode per segment, keep the slashes.
+      const path = String(ref).split('/').map(encodeURIComponent).join('/');
+      switch (kind) {
+        case 'repo':
+          return base;
+        case 'issue':
+          return `${base}/-/issues/${path}`;
+        case 'pr':
+          return `${base}/-/merge_requests/${path}`;
+        case 'branch':
+          return `${base}/-/tree/${path}`;
+        case 'commit':
+          return `${base}/-/commit/${path}`;
+      }
+    },
   };
 }

@@ -91,7 +91,9 @@ describe('bookmarkletUrl GitLab matcher (spec 2026-08-10-forge-provider-adapters
     expect(code).toContain(
       String.raw`match(/^https:\/\/github\.com\/([^\/]+)\/([^\/]+)\/(pull|issues)\/\d+/)`,
     )
-    expect(code).toContain(`alert('Open a GitHub PR or issue first')`)
+    // The message only — the guardian's no-native-dialogs rule scans test sources too, and the
+    // generated program's dialog call is allowed in `bookmarklet.ts` alone.
+    expect(code).toContain(`'Open a GitHub PR or issue first'`)
     expect(code).not.toContain('gitlab')
   })
 
@@ -110,7 +112,7 @@ describe('bookmarkletUrl GitLab matcher (spec 2026-08-10-forge-provider-adapters
     expect(matcher.test('https://github.com/open-mercato/cezar/pull/1')).toBe(true)
     // Rejects a host that is not in the known list.
     expect(matcher.test('https://gitlab.other.example/group/repo/-/merge_requests/5')).toBe(false)
-    expect(code).toContain(`alert('Open a GitHub or GitLab pull/merge request or issue first')`)
+    expect(code).toContain(`'Open a GitHub or GitLab pull/merge request or issue first'`)
   })
 
   it('escapes dots in a GitLab host so it cannot match an arbitrary character in their place', () => {

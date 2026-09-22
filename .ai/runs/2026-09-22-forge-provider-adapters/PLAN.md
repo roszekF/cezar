@@ -47,6 +47,7 @@
 | 3 | 3.8-review-fix | Finish forge-aware copy across the forge tab | dispatch | done | b195fece |
 | 3 | 3.1-review-fix | Name GitLab in the merge-state fallback | inline | done | b9f7d22b |
 | 4 | 4.2-review-fix | Persist the glab credential helper after a GitLab clone | dispatch | done | b22c4a50 |
+| 4 | 4.5-ds-fix | Keep the design guardian green in the bookmarklet test | inline | done | pending |
 
 ## Goal
 
@@ -250,6 +251,9 @@ All GitLab calls run `glab` with `cwd = repoRoot` through `forge/cli.ts`; `glab 
 #### 4.5 Bookmarklet matcher from discovered hosts
 - `lib/bookmarklet.ts` builds its matcher from the known forge hosts (github.com always; GitLab hosts from the projects' `repoUrl`s) and matches `/-/merge_requests/N` and `/-/issues/N`; the CSP caveat is recorded as unverified for GitLab (not re-tested against a live instance in this run), and the GitHub form is emitted unchanged.
 - Tests: generator for both forges; GitHub output byte-identical.
+
+#### 4.5-ds-fix Keep the design guardian green in the bookmarklet test
+- Found by the final gate's design-system pass (`packages/web/src/design-guardian.test.ts`, which runs inside `npm test`): the 4.5 tests asserted the emitted program's dialog call verbatim, and the no-native-dialogs rule scans test sources too (its allowance covers `src/lib/bookmarklet.ts` alone). The assertions now pin the message text only.
 
 #### 4.6 GitHub-event automations require a GitHub forge
 - `server.ts`: `GET /automations` `available`, the manual check, and boot `registerAutomationProject` decide "GitHub events are possible here" from `forgeKindOfRemote(remote) === 'github'` instead of `parsed.host === 'github.com'` / "any forge". Reason copy for a GitLab project: "GitHub automations need a GitHub remote". No route, status code, schema or nav change; schedule automations untouched.

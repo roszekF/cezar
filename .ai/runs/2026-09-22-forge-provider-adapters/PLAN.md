@@ -15,7 +15,7 @@
 |-------|------|-------|------|--------|--------|
 | 1 | 1.1 | Widen ForgeKind and add optional driver capabilities | dispatch | done | pending |
 | 1 | 1.2 | Widen the contract schemas and their narrowing consumers | dispatch | done | pending |
-| 1 | 1.3 | Extract forge/cli.ts shared adapter plumbing | dispatch:capable | todo | — |
+| 1 | 1.3 | Extract forge/cli.ts shared adapter plumbing | dispatch:capable | done | pending |
 | 1 | 1.4 | Route GET /github and /github/search through the driver | dispatch:capable | todo | — |
 | 1 | 1.5 | Route GET /github/comments through forge.listComments | dispatch | todo | — |
 | 1 | 1.6 | Route GET /github/checks through forge.listChecks | dispatch | todo | — |

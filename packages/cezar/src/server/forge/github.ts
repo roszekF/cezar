@@ -1,8 +1,18 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { z } from 'zod';
 import { REFERENCE_STATUS_MAX } from '@open-mercato/cezar-contract';
 import { autosaveCommit } from '../../git-worktree.ts';
+import {
+  createSwrCache,
+  deleteKeysWithPrefix,
+  evictForgeProjectCaches,
+  execTool,
+  fetchBoundedPages,
+  isNotFound,
+  notFoundReason,
+  registerProjectCacheEvictor,
+  runCli,
+  type BoundedPages,
+} from './cli.ts';
 import type {
   DraftPrInput,
   DraftPrOutcome,
@@ -37,7 +47,9 @@ import type {
  * protected by BACKWARD_COMPATIBILITY.md — additive changes only.
  */
 
-const exec = promisify(execFile);
+/** The ENOENT hint every `{ available: false }` payload carries — byte-identical to the pre-#847
+ *  literal (BACKWARD_COMPATIBILITY.md §2). */
+const GH_NOT_FOUND_REASON = notFoundReason('gh');
 
 export const GH_PR_DIFF_FILE_CAP = 300;
 export const GH_PR_PATCH_CAP = 512 * 1024;
@@ -147,8 +159,8 @@ export async function fetchGithubPrDiff(
     }
     return {
       available: false,
-      reason: /ENOENT/.test(message)
-        ? 'gh CLI not found — install it and run `gh auth login`'
+      reason: isNotFound(err)
+        ? GH_NOT_FOUND_REASON
         : firstLine(message),
     };
   }
@@ -271,13 +283,8 @@ export function rollupToChecks(rollup: z.infer<typeof ghStatusCheckRollup>): Git
   return 'passing';
 }
 
-async function gh(repoRoot: string, args: string[], timeout = 15_000): Promise<string> {
-  const { stdout } = await exec('gh', args, {
-    cwd: repoRoot,
-    timeout,
-    maxBuffer: 50 * 1024 * 1024,
-  });
-  return stdout;
+function gh(repoRoot: string, args: string[], timeout = 15_000): Promise<string> {
+  return runCli('gh', repoRoot, args, { timeoutMs: timeout, maxBuffer: 50 * 1024 * 1024 });
 }
 
 // ---- comment counts (#499 Phase 1) -----------------------------------------
@@ -482,8 +489,8 @@ export async function fetchGithub(repoRoot: string, refresh = false, limit = 30)
     return data;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const reason = /ENOENT/.test(message)
-      ? 'gh CLI not found — install it and run `gh auth login`'
+    const reason = isNotFound(err)
+      ? GH_NOT_FOUND_REASON
       : firstLine(message);
     return { available: false, reason, issues: [], prs: [] };
   }
@@ -672,8 +679,8 @@ export async function searchGithubItems(
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const reason = /ENOENT/.test(message)
-      ? 'gh CLI not found — install it and run `gh auth login`'
+    const reason = isNotFound(err)
+      ? GH_NOT_FOUND_REASON
       : firstLine(message);
     return { available: false, reason, items: [] };
   }
@@ -1042,15 +1049,12 @@ export async function resolveRepoHandle(
   return handle;
 }
 
-/** What the bounded timeline page loop returns. `stoppedShort` means "the timeline may have more
- *  rows than we fetched" and has exactly three causes — the page cap, the budget floor, and a
- *  failure on page ≥ 2. All three shorten the `commented` stream the same way, so all three feed
- *  `truncated` and arm the comments top-up; the cause does not change the remedy. A short page is
- *  the one exit that does NOT set it: that is the timeline genuinely ending. */
-type TimelinePages = { rows: unknown[]; stoppedShort: boolean };
+/** What the bounded timeline page loop returns — see `BoundedPages` in `./cli.ts`. */
+type TimelinePages = BoundedPages;
 
 /**
- * Walk `/issues/{n}/timeline` under ONE shared time budget.
+ * Walk `/issues/{n}/timeline` under ONE shared time budget — the GitHub defaults over the
+ * forge-neutral `fetchBoundedPages` (`./cli.ts`).
  *
  * `gh api --paginate` is not used here: it pages *"until there are no more pages of results"* and
  * exposes no page-limit flag, so the only way to bound the walk is to hand-roll it. The cap that
@@ -1063,47 +1067,17 @@ type TimelinePages = { rows: unknown[]; stoppedShort: boolean };
  *
  * Exported for unit tests; `run` is injected so the loop is testable without shelling out.
  */
-export async function fetchTimelinePages(
+export function fetchTimelinePages(
   run: (page: number, timeoutMs: number) => Promise<string>,
   opts: { maxPages?: number; budgetMs?: number; minPageMs?: number; now?: () => number } = {},
 ): Promise<TimelinePages> {
-  const maxPages = opts.maxPages ?? TIMELINE_MAX_PAGES;
-  const budgetMs = opts.budgetMs ?? TIMELINE_BUDGET_MS;
-  const minPageMs = opts.minPageMs ?? TIMELINE_MIN_PAGE_MS;
-  const now = opts.now ?? Date.now;
-
-  const deadline = now() + budgetMs;
-  const rows: unknown[] = [];
-  let stoppedShort = false;
-  let page = 1;
-
-  for (; page <= maxPages; page++) {
-    const remaining = deadline - now();
-    // Never spawn a page that cannot finish. A bare `remaining <= 0` guard catches only the exact
-    // boundary; the realistic case is 300 ms left, which spawns gh with a 300 ms timeout, throws,
-    // and looks indistinguishable from a real endpoint failure.
-    if (remaining < minPageMs) {
-      stoppedShort = true;
-      break;
-    }
-    let parsed: unknown[];
-    try {
-      parsed = z.array(z.unknown()).parse(JSON.parse(await run(page, remaining)));
-    } catch (err) {
-      // Page 1 rethrows so the caller's inner catch can decide whether substitution helps —
-      // nothing was fetched, so there is nothing to lose. A failure on any later page keeps the
-      // pages already in hand: discarding nine good pages to re-fetch comments-only is strictly
-      // worse than what the loop already holds.
-      if (page === 1) throw err;
-      stoppedShort = true;
-      break;
-    }
-    rows.push(...parsed);
-    if (parsed.length < TIMELINE_PER_PAGE) break; // short page — the real end of the timeline
-  }
-  if (page > maxPages) stoppedShort = true; // fell out on the page cap
-
-  return { rows, stoppedShort };
+  return fetchBoundedPages(run, {
+    maxPages: opts.maxPages ?? TIMELINE_MAX_PAGES,
+    budgetMs: opts.budgetMs ?? TIMELINE_BUDGET_MS,
+    minPageMs: opts.minPageMs ?? TIMELINE_MIN_PAGE_MS,
+    pageSize: TIMELINE_PER_PAGE,
+    ...(opts.now ? { now: opts.now } : {}),
+  });
 }
 
 /** SHAs per rollup query. Aliases resolve independently, so a chunk that fails costs only its own
@@ -1313,8 +1287,8 @@ export async function fetchGithubChecks(repoRoot: string, numbers: number[]): Pr
     const message = err instanceof Error ? err.message : String(err);
     return {
       available: false,
-      reason: /ENOENT/.test(message)
-        ? 'gh CLI not found — install it and run `gh auth login`'
+      reason: isNotFound(err)
+        ? GH_NOT_FOUND_REASON
         : firstLine(message),
     };
   }
@@ -2114,8 +2088,8 @@ export async function fetchGithubRefStatus(
     const message = err instanceof Error ? err.message : String(err);
     return {
       available: false,
-      reason: /ENOENT/.test(message)
-        ? 'gh CLI not found — install it and run `gh auth login`'
+      reason: isNotFound(err)
+        ? GH_NOT_FOUND_REASON
         : firstLine(message),
       recheckAfterMs: REF_STATUS_RETRY_MS,
     };
@@ -2232,8 +2206,7 @@ export async function fetchGithubComments(
       // Scoped INSIDE the existing outer catch on purpose: the outer handler's /404|not found/i
       // branch would otherwise turn a timeline 404 into an empty thread. ENOENT is the one failure
       // the fallback cannot rescue — nothing will work, and a second spawn fails identically.
-      const message = timelineErr instanceof Error ? timelineErr.message : String(timelineErr);
-      if (/ENOENT/.test(message)) throw timelineErr;
+      if (isNotFound(timelineErr)) throw timelineErr;
       // Every other endpoint-level failure substitutes the legacy comments call. It is a
       // substitution, not a retry — a different endpoint, which typically still answers. (A 403
       // attaches to the token rather than the endpoint, so it cannot succeed either; not
@@ -2281,8 +2254,8 @@ export async function fetchGithubComments(
     return data;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const reason = /ENOENT/.test(message)
-      ? 'gh CLI not found — install it and run `gh auth login`'
+    const reason = isNotFound(err)
+      ? GH_NOT_FOUND_REASON
       : /404|not found/i.test(message)
         ? 'not found on GitHub — it may be closed or deleted'
         : firstLine(message);
@@ -2515,41 +2488,6 @@ function tail(stderr: string): string {
   return stderr.trim().split('\n').slice(-3).join(' | ').slice(0, 300);
 }
 
-interface ExecResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-  /** True when the binary itself is missing (ENOENT). */
-  notFound: boolean;
-}
-
-function execTool(args: string[], cwd: string, bin: string, timeoutMs = 30_000): Promise<ExecResult> {
-  return new Promise((resolve) => {
-    execFile(
-      bin,
-      args,
-      {
-        cwd,
-        timeout: timeoutMs,
-        maxBuffer: 4 * 1024 * 1024,
-        encoding: 'utf8',
-        // Nobody can answer a prompt here: git opens /dev/tty directly, so
-        // piped stdio is not enough to stop it. Without this a `git push` that
-        // cannot authenticate hangs for the whole timeout and surfaces as a
-        // blank one-minute stall instead of git's own "could not read Username".
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-      },
-      (err, stdout, stderr) =>
-        resolve({
-          ok: !err,
-          stdout: stdout ?? '',
-          stderr: stderr ?? '',
-          notFound: err?.code === 'ENOENT',
-        }),
-    );
-  });
-}
-
 // ---- the driver -------------------------------------------------------------
 
 /** Cached availability probe so `GET /api/health` never pays a full listing. One entry per
@@ -2558,45 +2496,34 @@ function execTool(args: string[], cwd: string, bin: string, timeoutMs = 30_000):
  *  in `GET /automations` (and `/api/health`'s `forge` field) whenever a DIFFERENT project's probe
  *  ran more recently — the toggle going dark for reasons that have nothing to do with that
  *  project's own GitHub reachability. */
-const detectCache = new Map<string, { at: number; result: ForgeAvailability }>();
-/** Probes in flight, keyed by repo root: a cold read joins the revalidation the previous line of
- *  the same request already started, rather than shelling out to `gh repo view` a second time. */
-const detectInflight = new Map<string, Promise<ForgeAvailability>>();
 const DETECT_CACHE_MAX = 50;
+const detectCache = createSwrCache<string, ForgeAvailability>({
+  ttlMs: CACHE_MS,
+  max: DETECT_CACHE_MAX,
+  load: probeGithub,
+});
 
 function detectGithub(repoRoot: string): Promise<ForgeAvailability> {
   if (process.env.CEZ_DRY_RUN === '1') return Promise.resolve({ available: true });
-  const hit = detectCache.get(repoRoot);
-  if (hit && Date.now() - hit.at < CACHE_MS) return Promise.resolve(hit.result);
-  const inflight = detectInflight.get(repoRoot);
-  if (inflight) return inflight;
-  const probe = probeGithub(repoRoot).finally(() => detectInflight.delete(repoRoot));
-  detectInflight.set(repoRoot, probe);
-  return probe;
+  // Fresh hit, else join the probe already in flight for this root (a cold read joins the
+  // revalidation the previous line of the same request started), else probe.
+  return detectCache.get(repoRoot);
 }
 
+/** `gh repo view` as the availability probe. Never rejects — a failure is an answer to cache. */
 async function probeGithub(repoRoot: string): Promise<ForgeAvailability> {
-  let result: ForgeAvailability;
   try {
     await gh(repoRoot, ['repo', 'view', '--json', 'nameWithOwner'], 5_000);
-    result = { available: true };
+    return { available: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    result = {
+    return {
       available: false,
-      reason: /ENOENT/.test(message)
-        ? 'gh CLI not found — install it and run `gh auth login`'
+      reason: isNotFound(err)
+        ? GH_NOT_FOUND_REASON
         : firstLine(message),
     };
   }
-  detectCache.delete(repoRoot); // re-insert so this key becomes the newest
-  detectCache.set(repoRoot, { at: Date.now(), result });
-  while (detectCache.size > DETECT_CACHE_MAX) {
-    const oldest = detectCache.keys().next().value;
-    if (oldest === undefined) break;
-    detectCache.delete(oldest);
-  }
-  return result;
 }
 
 /**
@@ -2613,12 +2540,8 @@ async function probeGithub(repoRoot: string): Promise<ForgeAvailability> {
  */
 export function detectGithubCached(repoRoot: string): ForgeAvailability | null {
   if (process.env.CEZ_DRY_RUN === '1') return { available: true };
-  const hit = detectCache.get(repoRoot);
-  const fresh = hit && Date.now() - hit.at < CACHE_MS;
-  if (!fresh) {
-    void detectGithub(repoRoot).catch(() => {}); // revalidate off the request path
-  }
-  return hit?.result ?? null; // last-known value while revalidating; null only until the first probe warms
+  // Last-known value while revalidating off the request path; null only until the first probe warms.
+  return detectCache.peek(repoRoot);
 }
 
 const mergeStateCache = new Map<string, { at: number; value: ForgePrMergeStateResult }>();
@@ -2800,14 +2723,32 @@ async function fetchPrMergeState(
   }
 }
 
-export function evictGithubProjectCaches(repoRoot: string): void {
+/**
+ * What a merge invalidates: the list, the merge states and the comment threads of `repoRoot`.
+ * Deliberately narrower than `evictForgeProjectCaches` — dropping the availability probe after
+ * every merge would cold-start `detectGithubCached` and blink the sidebar's GitHub item (#508).
+ * Each cache is cleared by its own key format: `root` (list), `root:n` (merge state),
+ * `root␀kind#n` (comments — the `root:` prefix used here before #847 never matched one).
+ */
+function evictMergedPrCaches(repoRoot: string): void {
   listCache.delete(repoRoot);
-  mergeStateCache.forEach((_value, key) => {
-    if (key.startsWith(`${repoRoot}:`)) mergeStateCache.delete(key);
-  });
-  commentsCache.forEach((_value, key) => {
-    if (key.startsWith(`${repoRoot}:`)) commentsCache.delete(key);
-  });
+  deleteKeysWithPrefix(mergeStateCache, `${repoRoot}:`);
+  deleteKeysWithPrefix(commentsCache, `${repoRoot}\0`);
+}
+
+// Everything GitHub caches per root, for `evictForgeProjectCaches` (project removed/re-pointed).
+registerProjectCacheEvictor((repoRoot) => {
+  evictMergedPrCaches(repoRoot);
+  deleteKeysWithPrefix(checksCache, `${repoRoot}\0`); // root␀n
+  deleteKeysWithPrefix(prDiffCache, `${repoRoot}\0`); // root␀n␀head
+  deleteKeysWithPrefix(refStatusCache, `${repoRoot}\0`); // root␀#n
+  repoHandleCache.delete(repoRoot);
+  detectCache.delete(repoRoot);
+});
+
+/** Pre-#847 name, kept as a delegate: drops every per-root forge cache for `repoRoot`. */
+export function evictGithubProjectCaches(repoRoot: string): void {
+  evictForgeProjectCaches(repoRoot);
 }
 
 async function mergePullRequest(
@@ -2833,7 +2774,7 @@ async function mergePullRequest(
       return { merged: false, status: 409, error: current.blockers[0]?.message ?? 'The pull request is not eligible to merge.', code: current.eligibility, current };
     }
     if (process.env.CEZ_DRY_RUN === '1') {
-      evictGithubProjectCaches(repoRoot);
+      evictMergedPrCaches(repoRoot);
       return { merged: true, number, url: current.url, method: input.method, mergeCommitSha: 'abcdef0123456789abcdef0123456789abcdef01' };
     }
     if (!repoRef) return { merged: false, status: 404, error: 'GitHub repository not found.' };
@@ -2843,7 +2784,7 @@ async function mergePullRequest(
     ]);
     const result = ghMergeResultSchema.parse(JSON.parse(out));
     if (!result.merged) return { merged: false, status: 409, error: result.message ?? 'GitHub refused the merge.', code: 'github-blocked', current };
-    evictGithubProjectCaches(repoRoot);
+    evictMergedPrCaches(repoRoot);
     return { merged: true, number, url: current.url, method: input.method, ...(result.sha ? { mergeCommitSha: result.sha } : {}) };
   } catch (error) {
     const message = firstLine(error instanceof Error ? error.message : String(error));

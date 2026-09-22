@@ -197,6 +197,7 @@ import {
   type ForgeAvailability,
 } from './forge/index.ts';
 import { forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, GithubPrNotFoundError, GH_CHECKS_MAX, GH_SEARCH_MAX, GH_REF_STATUS_MAX } from './github.ts';
+import { createDraftPr } from './pr.ts';
 import { ensureLaunchKey } from './launch-key.ts';
 import { openInTerminal } from './open-in-terminal.ts';
 import { agentCliRunner, detectOpenTargets, openFileInDefaultApp, openInApp } from './open-in-app.ts';
@@ -4540,17 +4541,11 @@ export function createApp(deps: ServerDeps) {
       // driver's `createPR` pushes and opens the pull request from `run.worktreePath` (spec
       // 2026-08-10-forge-provider-adapters, Step 1.8), the same root `resolveForge` reads here.
       const forge = resolveForge(await getRepoInfo(run.worktreePath));
-      if (!forge) {
-        return c.json(
-          { error: 'No supported forge remote detected — merge the branch locally', manual: `git merge ${run.branch}` },
-          409,
-        );
-      }
-      const outcome = await forge.createPR({
-        repoRoot,
-        run,
-        handoffText: readHandoff(dataDir, id),
-      });
+      const input = { repoRoot, run, handoffText: readHandoff(dataDir, id) };
+      // No recognised forge keeps the pre-seam path verbatim: `createDraftPr` still runs the final
+      // autosave first — so the `git merge` hint below carries the task's last edits — and still
+      // answers the actionable "no git remote — add one" and the CEZ_DRY_RUN fake PR.
+      const outcome = forge ? await forge.createPR(input) : await createDraftPr(input);
       if (!outcome.ok) {
         return c.json({ error: outcome.error, manual: `git merge ${run.branch}` }, 409);
       }

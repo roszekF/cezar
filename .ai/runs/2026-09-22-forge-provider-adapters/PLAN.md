@@ -41,6 +41,8 @@
 | 4 | 4.5 | Bookmarklet matcher from discovered hosts | dispatch:cheap | todo | — |
 | 4 | 4.6 | GitHub-event automations require a GitHub forge | dispatch | todo | — |
 | 4 | 4.7 | Documentation for the second forge | inline | todo | — |
+| 1 | 1.7-review-fix | Type the driver-stub test payloads explicitly | inline | done | 5f7bae12 |
+| 1 | 1.8-review-fix | Keep the pre-seam draft-PR path when no forge resolves | inline | done | pending |
 
 ## Goal
 
@@ -134,6 +136,13 @@ Acceptance for the phase: a GitHub repo with `gh` and no config behaves byte-ide
 #### 1.8 Route PR changes and draft-PR creation through the driver
 - `GET /github/prs/:number/changes` via `forge.prDiff?` keeping the `GithubPrNotFoundError` → 404 mapping; `POST /runs/:id/pr` via `forge.createPR` (null forge → the existing 409 with `manual: git merge <branch>`); the `refNumberFromUrl`+`forgetRefStatus` follow-up unchanged.
 - Tests: `github-pr-changes-api.test.ts`, `forge/github-pr-diff.test.ts`, `forge/draft-pr-autosave.test.ts` green; null-forge 409 case.
+
+#### 1.7-review-fix Type the driver-stub test payloads explicitly
+- Appended mid-run: the 1.7 executor's follow-up commit annotating two test stubs with `ForgeChecksData`/`ForgeRefStatusData` so `npm run typecheck` passes (commit `ea6aada9` alone does not typecheck — known bisect gap, recorded in NOTIFY).
+
+#### 1.8-review-fix Keep the pre-seam draft-PR path when no forge resolves
+- Found at Phase 1 close: 1.8's null-forge early 409 skipped `createDraftPr`'s final autosave (so the `git merge` hint lost the task's last edits), its actionable "no git remote — add one" text, and the `CEZ_DRY_RUN` fake PR. With no resolved driver, `POST /runs/:id/pr` now calls `createDraftPr` exactly as before the seam.
+- Tests: dry-run no-remote worktree → 201 fake PR; non-dry-run no-remote → 409 with the original text.
 
 ### Phase 2 — Discovery (still GitHub-only in effect)
 

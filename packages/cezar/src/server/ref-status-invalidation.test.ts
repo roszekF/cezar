@@ -121,13 +121,13 @@ describe('a reference cezar changes itself is forgotten, not waited out', () => 
     }
   });
 
-  it('409s with a manual merge hint when the run worktree has no supported forge remote', async () => {
+  it('keeps the pre-seam draft-PR path for a worktree with no forge remote (dry run fakes the PR)', async () => {
     const worktree = mkdtempSync(join(tmpdir(), 'cez-refinvalidate-noforge-'));
     execFileSync('git', ['init', '-b', 'cez/def'], { cwd: worktree });
     execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: worktree });
     execFileSync('git', ['config', 'user.name', 'Test'], { cwd: worktree });
     execFileSync('git', ['commit', '--allow-empty', '-m', 'work'], { cwd: worktree });
-    // No `origin` remote at all — the driver has nothing to resolve a forge from.
+    // No `origin` remote at all — no driver resolves, so `createDraftPr` answers as it always did.
     const run = store.createRun({ title: 'Ship it too', task: 'ship it too', workflow: 'quick-task', steps: [] });
     store.updateRun(run.id, { status: 'review', worktreePath: worktree, branch: 'cez/def' });
 
@@ -136,12 +136,35 @@ describe('a reference cezar changes itself is forgotten, not waited out', () => 
         method: 'POST',
         headers: { origin: 'http://127.0.0.1:4321' },
       });
+      expect(res.status).toBe(201);
+      expect(await res.json()).toMatchObject({ dryRun: true });
+    } finally {
+      rmSync(worktree, { recursive: true, force: true });
+    }
+  });
+
+  it('409s with the actionable no-remote hint outside dry run when the worktree has no forge remote', async () => {
+    const worktree = mkdtempSync(join(tmpdir(), 'cez-refinvalidate-noremote-'));
+    execFileSync('git', ['init', '-b', 'cez/ghi'], { cwd: worktree });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: worktree });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: worktree });
+    execFileSync('git', ['commit', '--allow-empty', '-m', 'work'], { cwd: worktree });
+    const run = store.createRun({ title: 'Ship it three', task: 'ship it three', workflow: 'quick-task', steps: [] });
+    store.updateRun(run.id, { status: 'review', worktreePath: worktree, branch: 'cez/ghi' });
+
+    delete process.env.CEZ_DRY_RUN;
+    try {
+      const res = await apiRequest(app, `/api/v1/runs/${run.id}/pr`, {
+        method: 'POST',
+        headers: { origin: 'http://127.0.0.1:4321' },
+      });
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({
-        error: 'No supported forge remote detected — merge the branch locally',
-        manual: 'git merge cez/def',
+        error: 'no git remote — add one (git remote add origin <url>) or merge the branch locally',
+        manual: 'git merge cez/ghi',
       });
     } finally {
+      process.env.CEZ_DRY_RUN = '1';
       rmSync(worktree, { recursive: true, force: true });
     }
   });

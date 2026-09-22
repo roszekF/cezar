@@ -2057,6 +2057,43 @@ describe('RunStore — GitLab URL shapes (spec 2026-08-10-forge-provider-adapter
     expect(loaded?.referencedIssueUrl).toBeUndefined();
   });
 
+  // Step 4.4-review-fix. `parseRemote` deliberately keeps an on-prem remote's `http://` scheme
+  // and its port (D3), and `task-refs.ts` has always scanned prompts with `https?` — so an
+  // `http://` MR printed by the agent used to give the prompt half of a run a ref and this half
+  // nothing, two halves disagreeing about the same run.
+  it('picks up an http:// on-prem MR URL with a port, as the prompt scanner already does', () => {
+    const { store, run } = freshRun();
+    store.appendEvent(run.id, {
+      type: 'result',
+      result: 'Review http://gitlab.acme.internal:8929/group/repo/-/merge_requests/12 when you can.',
+    });
+    expect(store.getRun(run.id)?.referencedPullRequestUrl).toBe(
+      'http://gitlab.acme.internal:8929/group/repo/-/merge_requests/12',
+    );
+  });
+
+  it('picks up the http:// on-prem issue URL too, number and all', () => {
+    const { store, run } = freshRun();
+    store.appendEvent(run.id, {
+      type: 'result',
+      result: 'Fixing http://gitlab.acme.internal:8929/group/repo/-/issues/12 now.',
+    });
+    const loaded = store.getRun(run.id);
+    expect(loaded?.referencedIssueUrl).toBe('http://gitlab.acme.internal:8929/group/repo/-/issues/12');
+    expect(loaded?.issueNumber).toBe(12);
+  });
+
+  it('adopts the MR an on-prem `glab mr create` opened over http', () => {
+    const { store, run } = freshRun();
+    store.appendEvent(run.id, {
+      type: 'result',
+      result: '$ glab mr create --fill\nhttp://gitlab.acme.internal:8929/group/repo/-/merge_requests/12',
+    } as never);
+    expect(store.getRun(run.id)?.pullRequestUrl).toBe(
+      'http://gitlab.acme.internal:8929/group/repo/-/merge_requests/12',
+    );
+  });
+
   describe('repo scoping (#945) compares the whole project path', () => {
     it('adopts an MR of the project itself when the handle names its subgroup path', () => {
       const { store, run } = freshRun('task', { owner: 'Group/Sub', name: 'Proj' });

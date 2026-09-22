@@ -367,13 +367,19 @@ export interface RunEvent {
 const MAX_RUNS_KEPT = 300;
 const MAX_ARCHIVED_KEPT = 500;
 
-// GitLab's shape (spec 2026-08-10-forge-provider-adapters): `https://<any host>/<path…>/-/<kind>/N`,
+// GitLab's shape (spec 2026-08-10-forge-provider-adapters): `http(s)://<any host>/<path…>/-/<kind>/N`,
 // where the project path is everything before `/-/` — a subgroup path is `group/sub/project`, so
 // it needs at least two segments but has no upper bound. The host is free (gitlab.com and every
 // self-managed instance) EXCEPT github.com, so a github.com URL is only ever GitHub-shaped; and
 // the GitHub alternative stays pinned to github.com, so neither shape matches the other's URLs.
 // The GitHub alternative comes first and is the pre-GitLab pattern byte for byte.
-const GITLAB_PROJECT_URL = String.raw`https:\/\/(?!github\.com\/)[^/\s]+(?:\/(?!-\/)[^/\s]+){2,}\/-\/`;
+//
+// `https?` and the free host (which carries its own `:port`) are the on-prem case, not laxity:
+// `parseRemote` deliberately keeps an `http://` remote's scheme and port (D3), and `task-refs.ts`
+// has always scanned prompts with `https?` — so an agent printing
+// `http://gitlab.acme.internal:8929/group/repo/-/merge_requests/12` got a ref from the prompt
+// half of one run and no chip from this half of the same run.
+const GITLAB_PROJECT_URL = String.raw`https?:\/\/(?!github\.com\/)[^/\s]+(?:\/(?!-\/)[^/\s]+){2,}\/-\/`;
 const PR_URL_RE = new RegExp(
   String.raw`https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+|${GITLAB_PROJECT_URL}merge_requests\/\d+`,
 );
@@ -381,7 +387,7 @@ const ISSUE_URL_RE = new RegExp(
   String.raw`https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/\d+|${GITLAB_PROJECT_URL}issues\/\d+`,
 );
 /** A whole GitLab ref URL, capturing its project path (`group/sub/project`) — `refUrlRepo`. */
-const GITLAB_REF_URL_RE = /^https:\/\/(?!github\.com\/)[^/\s]+\/((?:(?!-\/)[^/\s]+\/){1,}(?!-\/)[^/\s]+)\/-\/(?:merge_requests|issues)\/\d+$/;
+const GITLAB_REF_URL_RE = /^https?:\/\/(?!github\.com\/)[^/\s]+\/((?:(?!-\/)[^/\s]+\/){1,}(?!-\/)[^/\s]+)\/-\/(?:merge_requests|issues)\/\d+$/;
 // The transcript auto-link is convenience only (the cockpit's own `gh pr create` path sets the
 // URL authoritatively). Adopt a PR URL ONLY when the agent actually CREATED one — a task that
 // reviews or merely references an existing PR must not get mislabeled with its number (#fake-pr).

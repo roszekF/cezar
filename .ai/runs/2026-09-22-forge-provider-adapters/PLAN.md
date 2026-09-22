@@ -49,7 +49,7 @@
 | 4 | 4.2-review-fix | Persist the glab credential helper after a GitLab clone | dispatch | done | b22c4a50 |
 | 4 | 4.5-ds-fix | Keep the design guardian green in the bookmarklet test | inline | done | 1a1260f8 |
 | 3 | 3.8-review-fix-2 | Forge kind per viewed project, not the boot project | dispatch | done | pending |
-| 4 | 4.4-review-fix | Match http and on-prem ports in GitLab run-bookkeeping URLs | dispatch | todo | — |
+| 4 | 4.4-review-fix | Match http and on-prem ports in GitLab run-bookkeeping URLs | dispatch | done | pending |
 | 4 | 4.4-review-fix-2 | Keep the foreign-reference guard working on GitLab | dispatch | todo | — |
 | 4 | 4.5-review-fix | Escape every regex metacharacter in bookmarklet hosts | dispatch | todo | — |
 | 4 | 4.6-review-fix | Keep GitHub-event automations on github.com only | dispatch | todo | — |

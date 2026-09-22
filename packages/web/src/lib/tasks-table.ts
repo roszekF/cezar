@@ -152,14 +152,16 @@ export function forgeRepoBase(remote: string | undefined, kind?: ForgeKind): For
   if (url) {
     const [, scheme, h, port, p] = url
     if (!scheme || !h || !p) return undefined
-    host = h
+    const normalized = normalizeRemoteHost(h)
+    if (!normalized) return undefined
+    host = normalized
     rawPath = p
     // http(s) remotes keep their own scheme and port — an on-prem instance may run on a
     // non-default port, and that is a genuine part of its web origin. Every other transport
     // below maps to the plain https web origin with no port.
     origin = /^https?$/i.test(scheme)
-      ? `${scheme.toLowerCase()}://${h.toLowerCase()}${port ? `:${port}` : ''}`
-      : `https://${h.toLowerCase()}`
+      ? `${scheme.toLowerCase()}://${host}${port ? `:${port}` : ''}`
+      : `https://${host}`
   } else {
     // scp-like: [user@]host:owner/repo(.git) — a leading '/' (local path)
     // can't match the host group, so plain directories fall through to undefined.
@@ -167,17 +169,36 @@ export function forgeRepoBase(remote: string | undefined, kind?: ForgeKind): For
     if (!scp) return undefined
     const [, h, p] = scp
     if (!h || !p) return undefined
-    host = h
+    // A scheme URL the pattern above rejected also matches this one, with the scheme as its
+    // "host" and `//rest` as its path. That is not an scp remote.
+    if (p.startsWith('//')) return undefined
+    const normalized = normalizeRemoteHost(h)
+    if (!normalized) return undefined
+    host = normalized
     rawPath = p
-    origin = `https://${h.toLowerCase()}`
+    origin = `https://${host}`
   }
   const parts = rawPath.replace(/\.git$/i, '').split('/').filter(Boolean)
   const owner = parts[parts.length - 2]
   const repo = parts[parts.length - 1]
   if (!owner || !repo) return undefined
-  const resolvedKind = kind ?? WELL_KNOWN_FORGE_HOSTS[host.toLowerCase()]
+  const resolvedKind = kind ?? WELL_KNOWN_FORGE_HOSTS[host]
   if (!resolvedKind) return undefined
   return { base: `${origin}/${parts.join('/')}`, kind: resolvedKind }
+}
+
+/** A plausible remote host: dot-separated DNS labels of letters, digits and hyphens (an IPv4
+ *  literal has the same shape); no bracketed IPv6 literal, which git's URL grammar here would
+ *  not reach anyway. The server's `normalizeRemoteHost` (`src/server/forge/index.ts`) is this
+ *  same rule — the host patterns above capture a class that admits spaces, tabs and newlines, so
+ *  without it `https://gitlab.com /group/repo` built a base carrying the raw bytes. Whitespace is
+ *  rejected rather than trimmed away: such a remote is malformed, not untidy. */
+const REMOTE_HOST_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i
+
+function normalizeRemoteHost(raw: string): string | undefined {
+  const host = raw.trim().toLowerCase()
+  if (host.length !== raw.length || !REMOTE_HOST_RE.test(host)) return undefined
+  return host
 }
 
 /** The URL a PR *display* chip shows: the PR the task created, else the PR the conversation

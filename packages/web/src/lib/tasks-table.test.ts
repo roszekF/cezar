@@ -483,6 +483,17 @@ describe('forgeRepoBase', () => {
     })
   })
 
+  // Mirrors the server parser's host rule (`parseRemote`): the capture admits whitespace, so a
+  // host carrying any is rejected rather than trimmed into something plausible-looking.
+  it.each([
+    ['https://gitlab.com /group/repo'],
+    ['https://gitlab.com\t/group/repo'],
+    ['git@gitlab.com :group/repo.git'],
+    ['http://[::1]:8929/group/repo'],
+  ])('rejects the malformed host in %j', (remote) => {
+    expect(forgeRepoBase(remote, 'gitlab')).toBeUndefined()
+  })
+
   it('never carries credentials into the built base', () => {
     expect(forgeRepoBase('https://user:token@gitlab.acme.internal/group/repo.git', 'gitlab')).toEqual({
       base: 'https://gitlab.acme.internal/group/repo',

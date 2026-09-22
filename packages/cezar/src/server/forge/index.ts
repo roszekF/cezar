@@ -65,14 +65,16 @@ export function parseRemote(remote: string): ParsedRemote | null {
   if (url) {
     const [, scheme, h, port, p] = url;
     if (!scheme || !h || !p) return null;
-    host = h;
+    const normalized = normalizeRemoteHost(h);
+    if (!normalized) return null;
+    host = normalized;
     rawPath = p;
     // http(s) remotes keep their own scheme and port (D3) — an on-prem instance may run on a
     // non-default port, and that is a genuine part of its web origin. Every other transport below
     // maps to the plain https web origin with no port.
     origin = /^https?$/i.test(scheme)
-      ? `${scheme.toLowerCase()}://${h.toLowerCase()}${port ? `:${port}` : ''}`
-      : `https://${h.toLowerCase()}`;
+      ? `${scheme.toLowerCase()}://${host}${port ? `:${port}` : ''}`
+      : `https://${host}`;
   } else {
     // scp-like: [user@]host:owner/repo(.git) — a leading '/' (local path)
     // can't match the host group, so plain directories fall through to null.
@@ -80,15 +82,41 @@ export function parseRemote(remote: string): ParsedRemote | null {
     if (!scp) return null;
     const [, h, p] = scp;
     if (!h || !p) return null;
-    host = h;
+    // A scheme URL the pattern above rejected (an IPv6 literal, say) also matches this one, with
+    // the scheme as its "host" and `//rest` as its path. That is not an scp remote.
+    if (p.startsWith('//')) return null;
+    const normalized = normalizeRemoteHost(h);
+    if (!normalized) return null;
+    host = normalized;
     rawPath = p;
-    origin = `https://${h.toLowerCase()}`;
+    origin = `https://${host}`;
   }
   const parts = rawPath.replace(/\.git$/i, '').split('/').filter(Boolean);
   const owner = parts[parts.length - 2];
   const repo = parts[parts.length - 1];
   if (!owner || !repo) return null;
-  return { host: host.toLowerCase(), owner, repo, path: parts.join('/'), origin };
+  return { host, owner, repo, path: parts.join('/'), origin };
+}
+
+/** A plausible remote host: dot-separated DNS labels of letters, digits and hyphens (an IPv4
+ *  literal has the same shape). Deliberately the same grammar as `HOST_HEADER_RE` in
+ *  `./discovery.ts`, minus its "at least one dot" rule — a bare word there is CLI prose, but a
+ *  remote may legitimately name a single-label host (`https://intranet/gitlab/group/repo`).
+ *  Neither accepts a bracketed IPv6 literal, and neither does git's own URL grammar here. */
+const REMOTE_HOST_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+
+/**
+ * The host as `ParsedRemote` will carry it, or null when the capture is not a hostname. Both
+ * patterns above capture the host as a character class that admits spaces, tabs and newlines, and
+ * only `forgeKindOfHost` trims — so without this `https://gitlab.com /group/repo` parsed, kept the
+ * raw bytes in `host` and `origin`, passed checkout's 400 gate and put a malformed origin in
+ * `repoUrl`. Surrounding whitespace is rejected rather than trimmed away: a remote whose authority
+ * holds whitespace is malformed, not untidy, and every caller already handles null.
+ */
+function normalizeRemoteHost(raw: string): string | null {
+  const host = raw.trim().toLowerCase();
+  if (host.length !== raw.length || !REMOTE_HOST_RE.test(host)) return null;
+  return host;
 }
 
 // ---- Host classification (spec 2026-08-10-forge-provider-adapters § Forge discovery) ----------

@@ -161,6 +161,11 @@ describe('checkout — repo reference parsing', () => {
         'https://gitlab.com/group/repo;rm -rf',
         'gitlab.com/group/repo',
         `https://gitlab.com/${Array.from({ length: 22 }, (_, i) => `g${i}`).join('/')}`,
+        // A host with whitespace in it: rejected at the parse, so no malformed origin can reach
+        // `cloneUrl` (nor `repoUrl` on the projects route, which parses the same remote).
+        'https://gitlab.com /group/repo',
+        'https://gitlab.com\t/group/repo',
+        'git@git.corp.example :platform/deploy.git',
       ]) {
         expect(parseRepoRef(input), input).toBeNull();
       }

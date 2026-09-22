@@ -83,6 +83,21 @@ describe('parseRemote', () => {
   ])('rejects %s', (remote) => {
     expect(parseRemote(remote)).toBeNull();
   });
+
+  // The host patterns capture `[^/:]+`, which admits whitespace; classification trims, but `host`
+  // and `origin` kept the raw bytes, so a malformed origin reached `repoUrl` and checkout.
+  it.each([
+    ['https://gitlab.com /group/repo'],
+    ['https://gitlab.com\t/group/repo'],
+    ['https://gitlab.com\n/group/repo'],
+    ['git@gitlab.com :group/repo.git'],
+    ['https://git lab.com/group/repo'],
+    ['https://gitlab_com/group/repo'], // underscore: not a DNS label
+    ['https://-gitlab.com/group/repo'], // a label may not start with a hyphen
+    ['http://[::1]:8929/group/repo'], // no IPv6 literal, here or in discovery's header rule
+  ])('rejects the malformed host in %j', (remote) => {
+    expect(parseRemote(remote)).toBeNull();
+  });
 });
 
 describe('forgeWebRoot with path/origin (Step 2.3)', () => {
@@ -99,6 +114,10 @@ describe('forgeWebRoot with path/origin (Step 2.3)', () => {
     ['https://gitlab.com/group/repo/', 'https://gitlab.com/group/repo'],
   ])('builds %s → %s from well-known hosts alone', (remote, expected) => {
     expect(forgeWebRoot(remote)).toBe(expected);
+  });
+
+  it('a remote with a malformed host yields no web root, so `repoUrl` is simply absent', () => {
+    expect(forgeWebRoot('https://gitlab.com /group/repo')).toBeNull();
   });
 
   it('scp-form on-prem GitLab remote: origin has no port', () => {

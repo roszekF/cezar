@@ -144,7 +144,9 @@ export function parseRepoRef(input: string): RepoRef | null {
 /** The GitLab half of `parseRepoRef`: a full URL whose host classifies as
  *  `gitlab`. Every path segment passes the same `NAME_SEGMENT` check the GitHub
  *  shape does, and the clone URL is rebuilt from the parsed origin + validated
- *  segments — user info, query strings and odd characters never reach `glab`. */
+ *  segments — user info, query strings and odd characters never reach `glab`.
+ *  The host needs no check of its own: `parseRemote` returns null unless it is a
+ *  hostname, and `forgeKindOfHost` then matches it against a known set. */
 function parseGitlabRef(url: string): RepoRef | null {
   const remote = parseRemote(url);
   if (!remote || forgeKindOfHost(remote.host) !== 'gitlab') return null;

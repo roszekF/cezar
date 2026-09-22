@@ -44,7 +44,7 @@
 - 📡&nbsp;Watch it work live: agent text, tool calls, tokens and cost.
 - 🏁&nbsp;Run the same task ×2 or ×3, compare the diffs and keep the best one.
 - 🧩&nbsp;Skills are Markdown files and workflows are short YAML files. Mix agents per step.
-- 🐙&nbsp;Run the agent straight on a GitHub issue. Nothing merges on its own.
+- 🐙&nbsp;Run the agent straight on a GitHub issue or a GitLab issue/merge request — gitlab.com and self-managed both work. Nothing merges on its own.
 - 📂&nbsp;One cockpit for all your projects.
 - 💾&nbsp;No database. Everything is saved as plain files in `.ai/cezar/`.
 
@@ -89,7 +89,7 @@
 You need **Node 20+** and at least one agent CLI you're logged into:
 [Claude Code](https://github.com/anthropics/claude-code), [Codex](https://github.com/openai/codex),
 [OpenCode](https://opencode.ai) or [pi](https://github.com/badlogic/pi-mono).
-`git` and `gh` are optional.
+`git`, `gh` and `glab` are optional — `gh` unlocks GitHub, `glab` unlocks GitLab (including self-managed); without either, cezar is plain-git.
 
 ```bash
 cd your-repo

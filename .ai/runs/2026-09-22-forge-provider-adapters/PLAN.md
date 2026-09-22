@@ -40,7 +40,7 @@
 | 4 | 4.4 | Run bookkeeping learns GitLab URL shapes | dispatch | done | 2a49957a |
 | 4 | 4.5 | Bookmarklet matcher from discovered hosts | dispatch:cheap | done | pending |
 | 4 | 4.6 | GitHub-event automations require a GitHub forge | dispatch | done | pending |
-| 4 | 4.7 | Documentation for the second forge | inline | todo | — |
+| 4 | 4.7 | Documentation for the second forge | inline | done | pending |
 | 1 | 1.7-review-fix | Type the driver-stub test payloads explicitly | inline | done | 5f7bae12 |
 | 1 | 1.8-review-fix | Keep the pre-seam draft-PR path when no forge resolves | inline | done | 7ec3ab5f |
 | 3 | 3.2-review-fix | Freeze the clock in the GitLab dry-run list test | inline | done | 927f232b |

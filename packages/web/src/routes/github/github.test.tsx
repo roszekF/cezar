@@ -1171,6 +1171,23 @@ describe('the unavailable forge state, and forge-flavored copy across the tab', 
     )
   })
 
+  // Step 4.4: the hand-off pre-fill and the posted task speak GitLab's wording, which
+  // `task-refs.ts` learned in the same change.
+  it('pre-fills and posts "Fix GitLab issue #N" for a GitLab project', async () => {
+    const sent = stubFetch({
+      'GET /api/v1/health': () => jsonResponse({ ...health(['claude']), forge: { kind: 'gitlab', available: true } }),
+    })
+    await openDetail()
+    await waitFor(() => expect(promptValue()).toBe(githubTaskRef(ISSUE_142, 'gitlab')))
+    expect(promptValue().startsWith('Fix GitLab issue #142:')).toBe(true)
+    await waitForAgentRunEnabled()
+
+    fireEvent.click(screen.getByRole('button', { name: /Run agent on this issue/ }))
+
+    await waitFor(() => expect(postedRun(sent)).toBeDefined())
+    expect((postedRun(sent) as { task?: string }).task).toBe(githubTaskRef(ISSUE_142, 'gitlab'))
+  })
+
   it('shows the GitLab-flavored loading subtitle while the list request is in flight', async () => {
     stubFetch({
       'GET /api/v1/github?limit=1000': () => new Promise<Response>(() => {}),

@@ -3074,4 +3074,12 @@ describe('refNumberFromUrl', () => {
     expect(refNumberFromUrl('')).toBeNull();
     expect(refNumberFromUrl('https://github.com/o/r/pull/0')).toBeNull();
   });
+
+  it('reads a GitLab URL too, by design left unchanged (spec 2026-08-10-forge-provider-adapters)', () => {
+    // server.ts hands a created/merged URL to `forgetRefStatus`, a GitHub-only cache. On a GitLab
+    // project that cache holds nothing for the repo, so evicting `#N` there is a harmless no-op —
+    // not worth a host check that would risk changing any GitHub answer.
+    expect(refNumberFromUrl('https://gitlab.com/group/sub/proj/-/merge_requests/42')).toBe(42);
+    expect(refNumberFromUrl('https://gitlab.example.com/g/p/-/issues/7')).toBe(7);
+  });
 });

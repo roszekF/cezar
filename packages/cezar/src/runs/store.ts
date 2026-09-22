@@ -281,8 +281,8 @@ export const runRecordSchema = z.object({
    *  instead of re-adopting the next URL as "the only one". Capped. */
   referencedPrCandidates: z.array(z.string()).optional(),
   /** The issue this task is ABOUT (spec 2026-07-21-report-ref-discovery):
-   *  auto-discovered from `github.com/…/issues/N` links in the conversation,
-   *  mirroring the referenced-PR tier. Display-only; never gates actions. */
+   *  auto-discovered from `github.com/…/issues/N` (or GitLab `…/-/issues/N`) links in the
+   *  conversation, mirroring the referenced-PR tier. Display-only; never gates actions. */
   referencedIssueUrl: z.string().optional(),
   /** Distinct issue URLs spotted so far — the referenced-issue working set,
    *  persisted like `referencedPrCandidates`. Capped. */
@@ -367,13 +367,27 @@ export interface RunEvent {
 const MAX_RUNS_KEPT = 300;
 const MAX_ARCHIVED_KEPT = 500;
 
-const PR_URL_RE = /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/;
-const ISSUE_URL_RE = /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/\d+/;
+// GitLab's shape (spec 2026-08-10-forge-provider-adapters): `https://<any host>/<path…>/-/<kind>/N`,
+// where the project path is everything before `/-/` — a subgroup path is `group/sub/project`, so
+// it needs at least two segments but has no upper bound. The host is free (gitlab.com and every
+// self-managed instance) EXCEPT github.com, so a github.com URL is only ever GitHub-shaped; and
+// the GitHub alternative stays pinned to github.com, so neither shape matches the other's URLs.
+// The GitHub alternative comes first and is the pre-GitLab pattern byte for byte.
+const GITLAB_PROJECT_URL = String.raw`https:\/\/(?!github\.com\/)[^/\s]+(?:\/(?!-\/)[^/\s]+){2,}\/-\/`;
+const PR_URL_RE = new RegExp(
+  String.raw`https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+|${GITLAB_PROJECT_URL}merge_requests\/\d+`,
+);
+const ISSUE_URL_RE = new RegExp(
+  String.raw`https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/\d+|${GITLAB_PROJECT_URL}issues\/\d+`,
+);
+/** A whole GitLab ref URL, capturing its project path (`group/sub/project`) — `refUrlRepo`. */
+const GITLAB_REF_URL_RE = /^https:\/\/(?!github\.com\/)[^/\s]+\/((?:(?!-\/)[^/\s]+\/){1,}(?!-\/)[^/\s]+)\/-\/(?:merge_requests|issues)\/\d+$/;
 // The transcript auto-link is convenience only (the cockpit's own `gh pr create` path sets the
 // URL authoritatively). Adopt a PR URL ONLY when the agent actually CREATED one — a task that
 // reviews or merely references an existing PR must not get mislabeled with its number (#fake-pr).
+// `glab mr create` is GitLab's spelling of the same claim.
 const CREATED_PR_RE =
-  /\b(?:gh\s+pr\s+create|pull\s*request\s+created|created\s+(?:a\s+)?(?:draft\s+)?(?:pr|pull\s*request)|opened\s+(?:a\s+)?(?:draft\s+)?pull\s*request)\b/i;
+  /\b(?:gh\s+pr\s+create|glab\s+mr\s+create|pull\s*request\s+created|created\s+(?:a\s+)?(?:draft\s+)?(?:pr|pull\s*request)|opened\s+(?:a\s+)?(?:draft\s+)?pull\s*request)\b/i;
 
 /** Referenced-tier working-set cap (spec 2026-07-16-pr-autodiscovery): past
  *  this many distinct PRs the conversation is a survey, not a subject. */
@@ -384,8 +398,13 @@ const MAX_PR_CANDIDATES = 8;
 export type RepoHandle = { owner: string; name: string };
 
 /** `https://github.com/open-mercato/cezar/pull/402` → `open-mercato/cezar`, lowercased.
- *  Undefined for anything that is not a `<host>/<owner>/<repo>/<kind>/<n>` forge URL. */
+ *  Undefined for anything that is not a `<host>/<owner>/<repo>/<kind>/<n>` forge URL.
+ *  A GitLab URL yields its whole project path — `https://gitlab.example.com/group/sub/proj/-/
+ *  merge_requests/4` → `group/sub/proj` — which is what a `{owner: 'group/sub', name: 'proj'}`
+ *  handle joins to, and what a prompt that pastes the URL contains. */
 function refUrlRepo(url: string): string | undefined {
+  const gitlab = GITLAB_REF_URL_RE.exec(url);
+  if (gitlab?.[1]) return gitlab[1].toLowerCase();
   const parts = url.split('/');
   const owner = parts[parts.length - 4];
   const name = parts[parts.length - 3];
@@ -396,8 +415,8 @@ function refUrlRepo(url: string): string | undefined {
  * May the referenced tier ADOPT this URL as the task's subject? (#945)
  *
  * The tier was text-scoped but never repo-scoped: `PR_URL_RE` matches any
- * `github.com/<owner>/<repo>/pull/N`, so a research task that cites one upstream PR handed the
- * resolver exactly one candidate and it became the task's identity — an `oko` task wearing
+ * `github.com/<owner>/<repo>/pull/N` (and, since the GitLab adapter, any `<path>/-/merge_requests/N`),
+ * so a research task that cites one upstream PR handed the resolver exactly one candidate and it became the task's identity — an `oko` task wearing
  * `supabase/cli#6056`. Nothing compared the URL's repository with the project's own.
  *
  * A foreign URL is adoptable only when the TASK PROMPT corroborates it: the prompt names that

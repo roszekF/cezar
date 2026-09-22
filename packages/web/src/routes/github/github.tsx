@@ -565,6 +565,7 @@ export function GithubRoute({
                 active={selected?.url === item.url}
                 queued={queued.has(item.url)}
                 checks={item.kind === 'pr' ? checksMap?.[item.number] ?? item.checks : item.checks}
+                forgeKind={forgeKind}
               />
             ))}
           </ul>
@@ -587,6 +588,7 @@ export function GithubRoute({
                   active={selected?.url === item.url}
                   queued={queued.has(item.url)}
                   checks={item.kind === 'pr' ? checksMap?.[item.number] ?? item.checks : item.checks}
+                  forgeKind={forgeKind}
                 />
               ))}
             </ul>
@@ -612,8 +614,11 @@ export function GithubRoute({
             forgeKind={forgeKind}
           >
             <HandToAgent
-              key={selected.url}
+              // The pre-fill is captured once per mount, so a GitLab kind that arrives after the
+              // first render must remount it; a GitHub key is the plain URL it always was.
+              key={forgeKind === 'gitlab' ? `gitlab:${selected.url}` : selected.url}
               item={selected}
+              forgeKind={forgeKind}
               workflows={workflows.data?.workflows ?? []}
               skills={skillList}
               workflow={workflow}
@@ -660,6 +665,7 @@ function GithubRow({
   active,
   queued,
   checks,
+  forgeKind,
 }: {
   item: GithubItem
   view: GithubView
@@ -668,6 +674,8 @@ function GithubRow({
   queued: boolean
   /** Resolved checks glyph — the lazily-hydrated value overrides the list's `null` (#664). */
   checks?: GithubItem['checks']
+  /** The forge the row's item lives on — the dragged prompt's wording (`githubTaskPrompt`). */
+  forgeKind?: ForgeKind
 }) {
   const Icon = item.kind === 'issue' ? CircleDotIcon : GitPullRequestIcon
   const queryClient = useQueryClient()
@@ -686,7 +694,7 @@ function GithubRow({
   // issue" uses (legacy parity); a textarea accepts the text/plain payload natively.
   const onDragStart = (event: DragEvent) => {
     try {
-      event.dataTransfer.setData('text/plain', githubTaskPrompt(item))
+      event.dataTransfer.setData('text/plain', githubTaskPrompt(item, [], forgeKind))
       event.dataTransfer.effectAllowed = 'copy'
     } catch {
       // older engines — the drag just won't carry the prompt

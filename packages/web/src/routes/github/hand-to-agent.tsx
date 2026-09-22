@@ -14,7 +14,7 @@ import { Link } from '@/lib/project-router'
 
 import { createRun, putUiState } from '@/api/client'
 import { queryKeys, useHealth, useUiState } from '@/api/queries'
-import type { GithubItem, Skill, WorkflowDef } from '@open-mercato/cezar-api-client'
+import type { ForgeKind, GithubItem, Skill, WorkflowDef } from '@open-mercato/cezar-api-client'
 import { EnginePills, engineRunBody, useResolvedEngine, type EnginePick } from '@/components/engine-pills'
 import { chipClass } from '@/components/picker-pill'
 import { Button } from '@/components/ui/button'
@@ -87,6 +87,7 @@ export function HandToAgent({
   onEngineChange,
   queuedRunId,
   onQueued,
+  forgeKind,
 }: {
   item: GithubItem
   workflows: readonly WorkflowDef[]
@@ -101,6 +102,9 @@ export function HandToAgent({
   /** The run already queued from this item, if any — renders the "✓ queued" affordance. */
   queuedRunId: string | null
   onQueued: (url: string, runId: string) => void
+  /** Which forge the item lives on (`health.forge?.kind`, as the route reads it) — picks the task
+   *  wording `githubTaskRef` writes. Absent reads as GitHub, today's text. */
+  forgeKind?: ForgeKind | null
 }) {
   const queryClient = useQueryClient()
   const uiState = useUiState()
@@ -117,7 +121,7 @@ export function HandToAgent({
   // that replaces it — github.tsx), and the component is keyed by `item.url`, not by title — so a
   // title that differs between the two payloads would otherwise leave `prompt !== base`, which
   // reads as "user-owned": the pre-fill would be persisted as a draft and auto-apply would stop.
-  const [base] = useState(() => githubTaskRef(item))
+  const [base] = useState(() => githubTaskRef(item, forgeKind))
   // The route remounts this component per item (key={item.url}); the DRAFT — not plain component
   // state (#408) — restores whatever was typed for THIS item, so switching away and back (or a
   // page refresh) never loses it. No draft stored → the pre-fill.
@@ -186,7 +190,7 @@ export function HandToAgent({
   const start = useMutation({
     mutationFn: async () => {
       if (!resolved.canRun) return null
-      return createRun(githubRunBody(item, workflow, validSkills, prompt, engineRunBody(resolved)))
+      return createRun(githubRunBody(item, workflow, validSkills, prompt, engineRunBody(resolved), forgeKind))
     },
     onSuccess: (created) => {
       if (created === null) return

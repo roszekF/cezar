@@ -1,7 +1,16 @@
 import { z } from 'zod';
 import { createSwrCache, deleteKeysWithPrefix, fetchBoundedPages, isNotFound, registerProjectCacheEvictor, runCli } from './cli.ts';
-import { GH_CHECKS_MAX, TIMELINE_BUDGET_MS, TIMELINE_EVENT_CAP, TIMELINE_MAX_PAGES, TIMELINE_MIN_PAGE_MS, THREAD_ENTRY_CAP } from './github.ts';
+import {
+  GH_CHECKS_MAX,
+  GithubPrNotFoundError,
+  TIMELINE_BUDGET_MS,
+  TIMELINE_EVENT_CAP,
+  TIMELINE_MAX_PAGES,
+  TIMELINE_MIN_PAGE_MS,
+  THREAD_ENTRY_CAP,
+} from './github.ts';
 import type { ParsedRemote } from './index.ts';
+import { FORGE_PR_DIFF_FILE_CAP, FORGE_PR_DIFF_JSON_CAP, FORGE_PR_PATCH_CAP } from './limits.ts';
 import type {
   ForgeAvailability,
   ForgeChecksData,
@@ -12,6 +21,8 @@ import type {
   ForgeItem,
   ForgeListData,
   ForgeListOptions,
+  ForgePrChange,
+  ForgePrDiffResult,
   ForgePrStatus,
   ForgeTimelineEvent,
   ForgeTimelineEventKind,
@@ -27,7 +38,8 @@ import type {
  * `GET /github` tier. Step 3.3 adds `listComments` — the conversation thread, assembled from the
  * notes + resource-event endpoints since GitLab has no single timeline call like GitHub's. Step 3.4
  * adds `listChecks` (per-MR pipeline glyphs) and `prStatus` (the branch's newest merge request).
- * The remaining optional capabilities (`prDiff`, …) stay absent until their own Steps, which the
+ * Step 3.5 adds `prDiff` — bounded file changes, forge-neutral caps (`forge/limits.ts`). The
+ * remaining optional capabilities (`searchItems`, …) stay absent until their own Steps, which the
  * routes already degrade in the payload (`… is not supported for this gitlab remote`).
  */
 
@@ -773,6 +785,192 @@ async function fetchGitlabPrStatus(repoRoot: string, branch: string): Promise<Fo
   }
 }
 
+// ---- prDiff (Step 3.5) -------------------------------------------------------------------------
+// `…/merge_requests/:iid/changes` is deprecated upstream (Drift note, spec
+// 2026-08-10-forge-provider-adapters) — the paged `…/diffs` endpoint is the replacement, walked
+// through the shared bounded-page loop like the comments/events endpoints (Step 3.3). The caps are
+// forge-neutral (`forge/limits.ts`, D4): the same numbers GitHub's `fetchGithubPrDiff` enforces.
+
+const DIFFS_PAGE_SIZE = 100;
+
+const glDiffRowSchema = z.object({
+  old_path: z.string(),
+  new_path: z.string(),
+  new_file: z.boolean().default(false),
+  deleted_file: z.boolean().default(false),
+  renamed_file: z.boolean().default(false),
+  diff: z.string().default(''),
+  too_large: z.boolean().optional(),
+});
+type GlDiffRow = z.infer<typeof glDiffRowSchema>;
+
+/** Renamed wins over added/removed (a rename can also modify content); `modified` is the default —
+ *  mirrors `ghPrFileSchema`'s status enum, minus `copied`/`changed`, which `glab`'s diff endpoint
+ *  never reports. */
+function diffStatus(row: GlDiffRow): 'added' | 'removed' | 'renamed' | 'modified' {
+  if (row.renamed_file) return 'renamed';
+  if (row.new_file) return 'added';
+  if (row.deleted_file) return 'removed';
+  return 'modified';
+}
+
+/** `+`/`-` line counts from a unified diff, excluding the `+++`/`---` file headers (spec Step 3.5)
+ *  — `glab`'s diffs endpoint reports no separate stat, unlike GitHub's `additions`/`deletions`
+ *  fields, so the numbers come from the diff text itself. */
+function countDiffLines(diff: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) additions++;
+    else if (line.startsWith('-')) deletions++;
+  }
+  return { additions, deletions };
+}
+
+/** glab's own wording for "this merge request doesn't exist" (`glab api` prints `glab: 404 Not
+ *  Found (HTTP 404)` to stderr for a bad `:iid`) — distinct from every other CLI failure, which
+ *  degrades in the payload instead of 404ing. */
+function isGitlabNotFound(err: unknown): boolean {
+  const stderr = typeof err === 'object' && err !== null ? (err as { stderr?: unknown }).stderr : undefined;
+  const text = typeof stderr === 'string' && stderr ? stderr : err instanceof Error ? err.message : String(err);
+  return /404 Not Found|HTTP 404/i.test(text);
+}
+
+const prDiffCache = new Map<string, { at: number; data: ForgePrDiffResult }>();
+const PR_DIFF_CACHE_MAX = 50;
+
+registerProjectCacheEvictor((repoRoot) => deleteKeysWithPrefix(prDiffCache, `${repoRoot}\0`));
+
+/** CEZ_DRY_RUN=1 — mirrors `mockGithubPrDiff`'s shape and every degrade case it demos (renamed,
+ *  binary, too-large) so the offline demo shows the same file-changes view for either forge. */
+function mockGitlabPrDiff(number: number): ForgePrDiffResult {
+  return {
+    available: true,
+    number,
+    headSha: '0123456789abcdef0123456789abcdef01234567',
+    additions: 15,
+    deletions: 4,
+    truncated: true,
+    reason: 'One or more patches were not provided by GitLab.',
+    files: [
+      { path: 'src/session.ts', status: 'modified', additions: 8, deletions: 3, patch: '@@ -1,3 +1,4 @@\n-old\n+new\n context' },
+      { path: 'src/new-name.ts', previousPath: 'src/old-name.ts', status: 'renamed', additions: 7, deletions: 1, patch: '@@ -1 +1 @@\n-old name\n+new name' },
+      { path: 'assets/logo.png', status: 'modified', additions: 0, deletions: 0, patchUnavailableReason: 'binary' },
+      { path: 'generated/output.txt', status: 'modified', additions: 0, deletions: 0, patchUnavailableReason: 'too-large', truncated: true },
+    ],
+  };
+}
+
+/**
+ * Bounded, read-only file changes for a merge request (Step 3.5, mirrors `fetchGithubPrDiff`): the
+ * MR detail supplies `sha` (the head commit — GitLab's `sha` field IS the head, verified against a
+ * real gitlab.com capture), then `…/merge_requests/:iid/diffs` pages through the bounded loop.
+ * Never throws for an ordinary degrade (CLI missing, offline, malformed payload) — `{available:
+ * false, reason}` — but a 404 (the MR itself doesn't exist) throws `GithubPrNotFoundError` so the
+ * route's existing `instanceof` 404 mapping keeps working unchanged for either forge.
+ */
+async function fetchGitlabPrDiff(repoRoot: string, number: number, refresh = false): Promise<ForgePrDiffResult> {
+  if (process.env.CEZ_DRY_RUN === '1') return mockGitlabPrDiff(number);
+
+  let detail: GlMrDetail;
+  try {
+    detail = await fetchGitlabMrDetail(repoRoot, number);
+  } catch (err) {
+    if (isGitlabNotFound(err)) throw new GithubPrNotFoundError(`Merge request #${number} was not found`);
+    return { available: false, reason: isNotFound(err) ? GLAB_NOT_FOUND_REASON : glabFailureReason(err) };
+  }
+  const head = detail.sha;
+  if (!head) return { available: false, reason: 'glab merge request detail returned an unexpected response' };
+
+  const key = `${repoRoot}\0${number}\0${head}`;
+  const hit = prDiffCache.get(key);
+  if (!refresh && hit && Date.now() - hit.at < CACHE_MS) return hit.data;
+
+  let rows: GlDiffRow[];
+  let stoppedShort: boolean;
+  try {
+    const pages = await fetchBoundedPages(
+      (page, timeoutMs) =>
+        glab(repoRoot, ['api', `projects/:fullpath/merge_requests/${number}/diffs?per_page=${DIFFS_PAGE_SIZE}&page=${page}`], timeoutMs),
+      { maxPages: TIMELINE_MAX_PAGES, budgetMs: TIMELINE_BUDGET_MS, minPageMs: TIMELINE_MIN_PAGE_MS, pageSize: DIFFS_PAGE_SIZE },
+    );
+    rows = z.array(glDiffRowSchema).parse(pages.rows);
+    stoppedShort = pages.stoppedShort;
+  } catch (err) {
+    if (isGitlabNotFound(err)) throw new GithubPrNotFoundError(`Merge request #${number} was not found`);
+    return { available: false, reason: isNotFound(err) ? GLAB_NOT_FOUND_REASON : glabFailureReason(err) };
+  }
+
+  const counts = rows.map((row) => countDiffLines(row.diff));
+  const totalAdditions = counts.reduce((sum, c) => sum + c.additions, 0);
+  const totalDeletions = counts.reduce((sum, c) => sum + c.deletions, 0);
+
+  const limited = rows.slice(0, FORGE_PR_DIFF_FILE_CAP);
+  const fileCapped = rows.length >= FORGE_PR_DIFF_FILE_CAP;
+  let responseTruncated = fileCapped || (stoppedShort && !fileCapped);
+  const reasons: string[] = [];
+  if (fileCapped) reasons.push(`Only the first ${FORGE_PR_DIFF_FILE_CAP} files are shown.`);
+  else if (stoppedShort) reasons.push('Only some files could be fetched before the time budget ran out.');
+
+  const files: ForgePrChange[] = limited.map((row, i) => {
+    const { additions, deletions } = counts[i]!;
+    const status = diffStatus(row);
+    let patch: string | undefined = row.diff.length > 0 ? row.diff : undefined;
+    let truncated = false;
+    let patchUnavailableReason: 'binary' | 'too-large' | 'not-provided' | undefined;
+    if (patch !== undefined && Buffer.byteLength(patch, 'utf8') > FORGE_PR_PATCH_CAP) {
+      patch = undefined;
+      truncated = true;
+      patchUnavailableReason = 'too-large';
+      responseTruncated = true;
+    } else if (row.too_large || patch === undefined) {
+      patch = undefined;
+      patchUnavailableReason = additions === 0 && deletions === 0 ? 'binary' : 'not-provided';
+    }
+    return {
+      path: row.new_path,
+      ...(status === 'renamed' ? { previousPath: row.old_path } : {}),
+      status,
+      additions,
+      deletions,
+      ...(patch !== undefined ? { patch } : {}),
+      ...(patchUnavailableReason ? { patchUnavailableReason } : {}),
+      ...(truncated ? { truncated: true } : {}),
+    };
+  });
+
+  let kept = files;
+  while (
+    kept.length > 0 &&
+    Buffer.byteLength(JSON.stringify({ available: true, number, headSha: head, files: kept }), 'utf8') > FORGE_PR_DIFF_JSON_CAP
+  ) {
+    kept = kept.slice(0, -1);
+    responseTruncated = true;
+  }
+  if (kept.length < files.length) reasons.push('The response size limit omitted some files.');
+  if (files.some((file) => file.truncated)) reasons.push('One or more patches exceeded the per-file limit.');
+
+  const data: ForgePrDiffResult = {
+    available: true,
+    number,
+    headSha: head,
+    files: kept,
+    additions: totalAdditions,
+    deletions: totalDeletions,
+    truncated: responseTruncated,
+    ...(reasons.length ? { reason: reasons.join(' ') } : {}),
+  };
+  prDiffCache.delete(key); // re-insert so this key becomes the newest
+  prDiffCache.set(key, { at: Date.now(), data });
+  while (prDiffCache.size > PR_DIFF_CACHE_MAX) {
+    const oldest = prDiffCache.keys().next();
+    if (oldest.done) break;
+    prDiffCache.delete(oldest.value);
+  }
+  return data;
+}
+
 /** `parsed` feeds `listAll`'s `repo` field and `viewUrl`'s origin + path fallback (Step 3.7). */
 export function createGitlabDriver(repoRoot: string, parsed: ParsedRemote): ForgeDriver {
   return {
@@ -791,6 +989,9 @@ export function createGitlabDriver(repoRoot: string, parsed: ParsedRemote): Forg
 
     // Lazy CI glyphs for on-screen MR rows (#664 parity) — byte-identical shape to GitHub's.
     listChecks: (numbers) => fetchGitlabChecks(repoRoot, numbers),
+
+    // Bounded, read-only file changes for a merge request — forge-neutral caps (Step 3.5).
+    prDiff: (number, opts) => fetchGitlabPrDiff(repoRoot, number, opts?.refresh),
 
     // Step 4.1 implements draft merge requests.
     createPR: async () => ({ ok: false, error: 'Merge request creation is not implemented yet for GitLab' }),

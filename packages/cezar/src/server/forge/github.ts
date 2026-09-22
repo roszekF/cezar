@@ -13,6 +13,7 @@ import {
   runCli,
   type BoundedPages,
 } from './cli.ts';
+import { FORGE_PR_DIFF_FILE_CAP, FORGE_PR_DIFF_JSON_CAP, FORGE_PR_PATCH_CAP } from './limits.ts';
 import type {
   DraftPrInput,
   DraftPrOutcome,
@@ -52,9 +53,12 @@ import type {
  *  literal (BACKWARD_COMPATIBILITY.md §2). */
 const GH_NOT_FOUND_REASON = notFoundReason('gh');
 
-export const GH_PR_DIFF_FILE_CAP = 300;
-export const GH_PR_PATCH_CAP = 512 * 1024;
-export const GH_PR_DIFF_JSON_CAP = 4 * 1024 * 1024;
+// Forge-neutral now (spec 2026-08-10-forge-provider-adapters, Step 3.5, D4) — GitLab's driver
+// imports the neutral names from `./limits.ts` directly; these stay exported with the SAME values
+// so every existing importer of the GitHub-flavoured names keeps compiling unchanged.
+export const GH_PR_DIFF_FILE_CAP = FORGE_PR_DIFF_FILE_CAP;
+export const GH_PR_PATCH_CAP = FORGE_PR_PATCH_CAP;
+export const GH_PR_DIFF_JSON_CAP = FORGE_PR_DIFF_JSON_CAP;
 
 const ghPrFileSchema = z.object({
   filename: z.string().min(1),

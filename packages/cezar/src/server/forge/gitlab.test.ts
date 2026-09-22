@@ -11,8 +11,9 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import type { RunRecord } from '../../runs/store.ts';
 import { evictForgeProjectCaches } from './cli.ts';
-import { GH_CHECKS_MAX } from './github.ts';
+import { GH_CHECKS_MAX, GithubPrNotFoundError } from './github.ts';
 import { parseRemote, type ParsedRemote } from './index.ts';
+import { FORGE_PR_DIFF_FILE_CAP, FORGE_PR_PATCH_CAP } from './limits.ts';
 import {
   GLAB_NOT_FOUND_REASON,
   createGitlabDriver,
@@ -214,11 +215,11 @@ describe('GitLab driver — skeleton members (later steps implement them)', () =
 
   it('leaves the optional capabilities absent, so the routes degrade in the payload', () => {
     const driver = createGitlabDriver(freshRoot(), parsed());
-    // listAll (3.2), listComments (3.3) and listChecks (3.4) are now implemented — everything else
-    // still lands on later Steps (refStatus stays absent for good — spec Non-goals).
+    // listAll (3.2), listComments (3.3), listChecks (3.4) and prDiff (3.5) are now implemented —
+    // everything else still lands on later Steps (refStatus stays absent for good — spec
+    // Non-goals; prMergeState/mergePR are out of scope for this run entirely).
     expect(driver.refStatus).toBeUndefined();
     expect(driver.searchItems).toBeUndefined();
-    expect(driver.prDiff).toBeUndefined();
     expect(driver.prMergeState).toBeUndefined();
     expect(driver.mergePR).toBeUndefined();
   });
@@ -1078,5 +1079,232 @@ describe('GitLab driver — prStatus', () => {
     await driver.prStatus('feature/my-branch');
     const call = execFileMock.mock.calls.find((c) => (c[1] as string[])[0] === 'mr');
     expect(call?.[1]).toEqual(['mr', 'list', '--source-branch', 'feature/my-branch', '--all', '--output', 'json']);
+  });
+});
+
+// ---- prDiff (Step 3.5) --------------------------------------------------------------------------
+// `glab api projects/:fullpath/merge_requests/:iid` supplies `sha` (the head commit); the paged
+// `…/diffs` endpoint (NOT the deprecated `/changes`) supplies the files. `routeGlabPrDiff` answers
+// both by inspecting whether the `api` call's path carries `/diffs`.
+
+const mrDetailSha = (sha: string): string => JSON.stringify({ sha });
+
+type DiffsHandler = ((page: number) => unknown[]) | { fail: string };
+
+function routeGlabPrDiff(handlers: { detail?: MrHandler; diffs?: DiffsHandler }) {
+  execFileMock.mockImplementation((...callArgs: unknown[]) => {
+    const cliArgs = callArgs[1] as string[];
+    const cb = callArgs[callArgs.length - 1] as Callback;
+    if (cliArgs[0] !== 'api') {
+      cb(Object.assign(new Error(`Command failed: glab ${cliArgs.join(' ')}`), { code: 1, stderr: 'glab: unknown command\n' }));
+      return;
+    }
+    const path = cliArgs[1] ?? '';
+    if (path.includes('/diffs')) {
+      const h = handlers.diffs;
+      if (h === undefined) {
+        cb(Object.assign(new Error(`Command failed: glab ${cliArgs.join(' ')}`), { code: 1, stderr: 'glab: unknown command\n' }));
+        return;
+      }
+      if (typeof h === 'function') {
+        const page = Number(/[?&]page=(\d+)/.exec(path)?.[1] ?? '1');
+        cb(null, { stdout: JSON.stringify(h(page)), stderr: '' });
+        return;
+      }
+      cb(Object.assign(new Error(`Command failed: glab ${cliArgs.join(' ')}`), { code: 1, stderr: `${h.fail}\n` }));
+      return;
+    }
+    const h = handlers.detail;
+    if (h === undefined) {
+      cb(Object.assign(new Error(`Command failed: glab ${cliArgs.join(' ')}`), { code: 1, stderr: 'glab: 404 Not Found (HTTP 404)\n' }));
+      return;
+    }
+    if (typeof h === 'string') {
+      cb(null, { stdout: h, stderr: '' });
+      return;
+    }
+    cb(Object.assign(new Error(`Command failed: glab ${cliArgs.join(' ')}`), { code: 1, stderr: `${h.fail}\n` }));
+  });
+}
+
+const HEAD_SHA = '855b98091ea531902ba6557cb37be67324bd7c15';
+
+const diffAdded = {
+  old_path: 'src/new.ts',
+  new_path: 'src/new.ts',
+  new_file: true,
+  deleted_file: false,
+  renamed_file: false,
+  diff: '@@ -0,0 +1,2 @@\n+line1\n+line2',
+};
+const diffRemoved = {
+  old_path: 'src/gone.ts',
+  new_path: 'src/gone.ts',
+  new_file: false,
+  deleted_file: true,
+  renamed_file: false,
+  diff: '@@ -1,2 +0,0 @@\n-line1\n-line2',
+};
+const diffRenamed = {
+  old_path: 'src/old-name.ts',
+  new_path: 'src/new-name.ts',
+  new_file: false,
+  deleted_file: false,
+  renamed_file: true,
+  diff: '@@ -1 +1 @@\n-old\n+new',
+};
+const diffModified = {
+  old_path: 'src/mod.ts',
+  new_path: 'src/mod.ts',
+  new_file: false,
+  deleted_file: false,
+  renamed_file: false,
+  diff: '--- a/src/mod.ts\n+++ b/src/mod.ts\n@@ -1,2 +1,3 @@\n-old1\n-old2\n+new1\n+new2\n+new3',
+};
+
+describe('GitLab driver — prDiff', () => {
+  beforeEach(() => {
+    vi.stubEnv('CEZ_DRY_RUN', '');
+    execFileMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('maps added/removed/renamed/modified files, counting +/- lines and excluding the +++/--- headers', async () => {
+    routeGlabPrDiff({
+      detail: mrDetailSha(HEAD_SHA),
+      diffs: (page) => (page === 1 ? [diffAdded, diffRemoved, diffRenamed, diffModified] : []),
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.prDiff!(3950);
+    expect(data.available).toBe(true);
+    if (!data.available) throw new Error('expected available');
+    expect(data.headSha).toBe(HEAD_SHA);
+    expect(data.files).toEqual([
+      { path: 'src/new.ts', status: 'added', additions: 2, deletions: 0, patch: diffAdded.diff },
+      { path: 'src/gone.ts', status: 'removed', additions: 0, deletions: 2, patch: diffRemoved.diff },
+      { path: 'src/new-name.ts', previousPath: 'src/old-name.ts', status: 'renamed', additions: 1, deletions: 1, patch: diffRenamed.diff },
+      // 2 deletions, 3 additions — the `---`/`+++` file-header lines are NOT counted.
+      { path: 'src/mod.ts', status: 'modified', additions: 3, deletions: 2, patch: diffModified.diff },
+    ]);
+    expect(data.additions).toBe(2 + 0 + 1 + 3);
+    expect(data.deletions).toBe(0 + 2 + 1 + 2);
+    expect(data.truncated).toBe(false);
+  });
+
+  it('drops a patch over FORGE_PR_PATCH_CAP with patchUnavailableReason too-large, truncated', async () => {
+    const bigDiff = `+${'x'.repeat(FORGE_PR_PATCH_CAP + 10)}`;
+    routeGlabPrDiff({
+      detail: mrDetailSha(HEAD_SHA),
+      diffs: (page) => (page === 1 ? [{ ...diffModified, diff: bigDiff }] : []),
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.prDiff!(3950);
+    expect(data.available).toBe(true);
+    if (!data.available) throw new Error('expected available');
+    expect(data.files).toEqual([
+      { path: 'src/mod.ts', status: 'modified', additions: 1, deletions: 0, patchUnavailableReason: 'too-large', truncated: true },
+    ]);
+    expect(data.truncated).toBe(true);
+    expect(data.reason).toContain('One or more patches exceeded the per-file limit.');
+  });
+
+  it('an empty diff with too_large reports binary (no line changes) or not-provided (some)', async () => {
+    routeGlabPrDiff({
+      detail: mrDetailSha(HEAD_SHA),
+      diffs: (page) =>
+        page === 1
+          ? [
+              { ...diffModified, new_path: 'assets/logo.png', old_path: 'assets/logo.png', diff: '', too_large: true },
+              { ...diffAdded, new_path: 'huge.sql', old_path: 'huge.sql', diff: '', too_large: true },
+            ]
+          : [],
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.prDiff!(3950);
+    expect(data.available).toBe(true);
+    if (!data.available) throw new Error('expected available');
+    expect(data.files[0]).toMatchObject({ path: 'assets/logo.png', patchUnavailableReason: 'binary' });
+    // `huge.sql` is `new_file`, but its diff came back empty (too_large) with no +/- lines counted
+    // either — additions/deletions are both 0, so it lands on `binary` too, exactly like GitHub's
+    // own additions===0&&deletions===0 rule for a patch-less row.
+    expect(data.files[1]).toMatchObject({ path: 'huge.sql', patchUnavailableReason: 'binary' });
+  });
+
+  it('a diff set past FORGE_PR_DIFF_FILE_CAP truncates the file list and says so', async () => {
+    const rows = Array.from({ length: FORGE_PR_DIFF_FILE_CAP + 5 }, (_, i) => ({
+      old_path: `src/file-${i}.ts`,
+      new_path: `src/file-${i}.ts`,
+      new_file: false,
+      deleted_file: false,
+      renamed_file: false,
+      diff: '@@ -1 +1 @@\n-old\n+new',
+    }));
+    routeGlabPrDiff({ detail: mrDetailSha(HEAD_SHA), diffs: (page) => rows.slice((page - 1) * 100, page * 100) });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.prDiff!(3950);
+    expect(data.available).toBe(true);
+    if (!data.available) throw new Error('expected available');
+    expect(data.files).toHaveLength(FORGE_PR_DIFF_FILE_CAP);
+    expect(data.truncated).toBe(true);
+    expect(data.reason).toContain(`Only the first ${FORGE_PR_DIFF_FILE_CAP} files are shown.`);
+  });
+
+  it('a missing merge request (404 on the detail call) throws GithubPrNotFoundError', async () => {
+    routeGlabPrDiff({}); // no detail handler → 404
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    await expect(driver.prDiff!(999)).rejects.toBeInstanceOf(GithubPrNotFoundError);
+    await expect(driver.prDiff!(999)).rejects.toThrow('Merge request #999 was not found');
+  });
+
+  it('a glab CLI failure on the detail call degrades to unavailable, not a throw', async () => {
+    routeGlabPrDiff({ detail: { fail: GLAB_401 } });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.prDiff!(3950)).toEqual({ available: false, reason: GLAB_401 });
+  });
+
+  it('glab not installed (ENOENT) answers the install hint', async () => {
+    execFileMock.mockImplementation((...callArgs: unknown[]) => {
+      const cb = callArgs[callArgs.length - 1] as Callback;
+      cb(Object.assign(new Error('spawn glab ENOENT'), { code: 'ENOENT' }));
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.prDiff!(3950)).toEqual({ available: false, reason: GLAB_NOT_FOUND_REASON });
+  });
+
+  it('caches the diff per root/number/headSha; refresh bypasses it', async () => {
+    routeGlabPrDiff({ detail: mrDetailSha(HEAD_SHA), diffs: (page) => (page === 1 ? [diffAdded] : []) });
+    const root = freshRoot();
+    const driver = createGitlabDriver(root, parsed());
+    const first = await driver.prDiff!(3950);
+    expect(first.available).toBe(true);
+
+    routeGlabPrDiff({ detail: mrDetailSha(HEAD_SHA), diffs: (page) => (page === 1 ? [diffRemoved] : []) }); // "server" changed
+    expect(await driver.prDiff!(3950)).toEqual(first); // served from cache
+
+    const refreshed = await driver.prDiff!(3950, { refresh: true });
+    if (refreshed.available) expect(refreshed.files[0]?.path).toBe('src/gone.ts');
+  });
+
+  it('is available under CEZ_DRY_RUN=1 with a demo diff, without shelling out', async () => {
+    vi.stubEnv('CEZ_DRY_RUN', '1');
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.prDiff!(1);
+    expect(data.available).toBe(true);
+    if (data.available) expect(data.files.some((f) => f.status === 'renamed')).toBe(true);
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('evictForgeProjectCaches drops the cached diff for that root only', async () => {
+    routeGlabPrDiff({ detail: mrDetailSha(HEAD_SHA), diffs: (page) => (page === 1 ? [diffAdded] : []) });
+    const root = freshRoot();
+    const driver = createGitlabDriver(root, parsed());
+    await driver.prDiff!(3950);
+    evictForgeProjectCaches(root);
+    routeGlabPrDiff({ detail: mrDetailSha(HEAD_SHA), diffs: (page) => (page === 1 ? [diffRemoved] : []) });
+    const data = await driver.prDiff!(3950);
+    if (data.available) expect(data.files[0]?.path).toBe('src/gone.ts');
   });
 });

@@ -79,6 +79,44 @@ describe('the GitHub PR changes API', () => {
     }
   });
 
+  it('still 404s a not-found merge request through the GitLab driver (Step 3.5)', async () => {
+    const previousDryRun = process.env.CEZ_DRY_RUN;
+    delete process.env.CEZ_DRY_RUN;
+    const glRoot = mkdtempSync(join(tmpdir(), 'cez-pr-changes-gitlab-'));
+    mkdirSync(join(glRoot, '.ai/cezar'), { recursive: true });
+    execFileSync('git', ['init', '-b', 'main'], { cwd: glRoot });
+    execFileSync('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '--allow-empty', '-m', 'init'], {
+      cwd: glRoot,
+    });
+    execFileSync('git', ['remote', 'add', 'origin', 'https://gitlab.com/acme/demo.git'], { cwd: glRoot });
+    const glStore = RunStore.open(join(glRoot, '.ai/cezar'));
+    const bin = mkdtempSync(join(tmpdir(), 'cez-fakeglab-'));
+    writeFileSync(
+      join(bin, 'glab'),
+      '#!/bin/sh\n' +
+        'if [ "$1" = "api" ]; then\n' +
+        '  echo "glab: 404 Not Found (HTTP 404)" >&2\n' +
+        '  exit 1\n' +
+        'fi\n' +
+        'exit 1\n',
+      { mode: 0o755 },
+    );
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+    try {
+      const app = createApp({ repoRoot: glRoot, store: glStore, manager: {} as RunManager, version: 'test' });
+      const res = await apiRequest(app, '/api/v1/github/prs/999/changes');
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Merge request #999 was not found' });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(bin, { recursive: true, force: true });
+      glStore.flush();
+      rmSync(glRoot, { recursive: true, force: true });
+      if (previousDryRun === undefined) delete process.env.CEZ_DRY_RUN;
+      else process.env.CEZ_DRY_RUN = previousDryRun;
+    }
+  });
+
   it('still 404s a not-found pull request through the driver', async () => {
     const previousDryRun = process.env.CEZ_DRY_RUN;
     delete process.env.CEZ_DRY_RUN;

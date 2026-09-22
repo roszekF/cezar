@@ -19,6 +19,11 @@ import type { RepoHandle, RunStore } from './store.ts';
  * what `refUrlRepo` reads out of a merge-request URL — so the handle is the path split at its last
  * separator, which `isRepoScopedRef` rejoins into exactly that string.
  *
+ * It carries the instance HOST too (Step 5.9): a GitLab ref URL matches on any host, so without it
+ * a project on `gitlab.com/acme/widgets` adopted a mirror's `gitlab.internal.corp/acme/widgets`
+ * merge request as its own subject. `gh repo view` answers no host, so the GitHub branch below
+ * keeps arming a host-less handle and its comparison stays path-only, exactly as before.
+ *
  * An unclassified host (no remote, a local path, a GitHub Enterprise host before discovery has
  * warmed) falls through to `gh` as it always did, and an unparseable remote answers `null` — the
  * documented "unknown handle" state, which is pre-#945 behavior, never an error.
@@ -29,7 +34,9 @@ async function resolveForgeRepoHandle(repoRoot: string): Promise<RepoHandle | nu
   const parsed = remote ? parseRemote(remote) : null;
   if (!parsed) return null;
   const cut = parsed.path.lastIndexOf('/');
-  return cut <= 0 ? null : { owner: parsed.path.slice(0, cut), name: parsed.path.slice(cut + 1) };
+  return cut <= 0
+    ? null
+    : { owner: parsed.path.slice(0, cut), name: parsed.path.slice(cut + 1), host: parsed.host };
 }
 
 /**

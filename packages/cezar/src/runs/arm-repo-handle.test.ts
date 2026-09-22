@@ -114,8 +114,9 @@ describe('armRepoHandle (#945)', () => {
       armRepoHandle(store, '/repo');
       await settle();
 
-      // `{owner, name}` rejoins to `group/sub/proj` — what `refUrlRepo` reads out of an MR URL.
-      expect(setRepoHandle).toHaveBeenCalledWith({ owner: 'group/sub', name: 'proj' });
+      // `{owner, name}` rejoins to `group/sub/proj` — what `refUrlRepo` reads out of an MR URL,
+      // and `host` scopes that path to this instance (Step 5.9).
+      expect(setRepoHandle).toHaveBeenCalledWith({ owner: 'group/sub', name: 'proj', host: 'gitlab.com' });
       expect(resolveRepoHandleMock).not.toHaveBeenCalled();
     });
 
@@ -132,7 +133,13 @@ describe('armRepoHandle (#945)', () => {
       armRepoHandle(store, '/repo');
       await settle();
 
-      expect(setRepoHandle).toHaveBeenCalledWith({ owner: 'group', name: 'repo' });
+      // The host is the instance's hostname, port-free — `parseRemote` keeps the port in `origin`
+      // alone, and `isRepoScopedRef` compares hostnames (Step 5.9).
+      expect(setRepoHandle).toHaveBeenCalledWith({
+        owner: 'group',
+        name: 'repo',
+        host: 'gitlab.acme.internal',
+      });
     });
 
     it('leaves a GitHub project on `gh repo view` — renames and redirects still resolve', async () => {
@@ -144,6 +151,7 @@ describe('armRepoHandle (#945)', () => {
       await settle();
 
       expect(resolveRepoHandleMock).toHaveBeenCalledWith('/repo');
+      // No `host` on a `gh`-resolved handle — the GitHub comparison stays path-only (Step 5.9).
       expect(setRepoHandle).toHaveBeenCalledWith({ owner: 'open-mercato', name: 'cezar' });
     });
 

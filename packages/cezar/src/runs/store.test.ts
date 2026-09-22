@@ -1979,7 +1979,7 @@ describe('RunStore — GitLab URL shapes (spec 2026-08-10-forge-provider-adapter
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  const freshRun = (task = 'task', handle?: { owner: string; name: string } | null) => {
+  const freshRun = (task = 'task', handle?: { owner: string; name: string; host?: string } | null) => {
     const store = RunStore.open(dataDir);
     if (handle !== undefined) store.setRepoHandle(handle);
     const run = store.createRun({ title: 't', workflow: 'w', task, steps: [] });
@@ -2150,6 +2150,111 @@ describe('RunStore — GitLab URL shapes (spec 2026-08-10-forge-provider-adapter
       const { store, run } = freshRun(`review ${url}`, { owner: 'open-mercato', name: 'cezar' });
       store.appendEvent(run.id, { type: 'result', result: `Working on ${url} now.` });
       expect(store.getRun(run.id)?.referencedPullRequestUrl).toBe(url);
+    });
+  });
+
+  // Step 5.9. `GITLAB_PROJECT_URL` matches on ANY host, so a handle that knew only `owner/name`
+  // could not tell two instances sharing a project path apart — a task on `gitlab.com/acme/widgets`
+  // adopted a mirror's `gitlab.internal.corp/acme/widgets` merge request as its own subject.
+  describe('repo scoping (#945) is host-aware when the handle knows its host', () => {
+    const OWN = { owner: 'acme', name: 'widgets', host: 'gitlab.com' };
+
+    it('adopts an MR on the project’s own host and path', () => {
+      const { store, run } = freshRun('ship it', OWN);
+      store.appendEvent(run.id, {
+        type: 'result',
+        result: 'See https://gitlab.com/acme/widgets/-/merge_requests/7.',
+      });
+      expect(store.getRun(run.id)?.referencedPullRequestUrl).toBe(
+        'https://gitlab.com/acme/widgets/-/merge_requests/7',
+      );
+    });
+
+    it('drops the SAME path on a different instance — a mirror is not this project', () => {
+      const { store, run } = freshRun('ship it', OWN);
+      store.appendEvent(run.id, {
+        type: 'result',
+        result: 'See https://gitlab.internal.corp/acme/widgets/-/merge_requests/7.',
+      });
+      const loaded = store.getRun(run.id);
+      expect(loaded?.referencedPullRequestUrl).toBeUndefined();
+      // Evidence is still collected — the guard changes what is promoted, never what is recorded.
+      expect(loaded?.referencedPrCandidates).toEqual([
+        'https://gitlab.internal.corp/acme/widgets/-/merge_requests/7',
+      ]);
+    });
+
+    it('drops that mirror’s issue too, and takes back the number it seeded', () => {
+      const { store, run } = freshRun('ship it', OWN);
+      store.appendEvent(run.id, {
+        type: 'result',
+        result: 'Fixing https://gitlab.internal.corp/acme/widgets/-/issues/88 now.',
+      });
+      const loaded = store.getRun(run.id);
+      expect(loaded?.referencedIssueUrl).toBeUndefined();
+      expect(loaded?.issueNumber).toBeUndefined();
+    });
+
+    it('keeps a foreign-host MR the prompt pastes — the #819 hatch is path-based', () => {
+      const url = 'https://gitlab.internal.corp/acme/widgets/-/merge_requests/7';
+      const { store, run } = freshRun(`review ${url}`, OWN);
+      store.appendEvent(run.id, { type: 'result', result: `Working on ${url} now.` });
+      expect(store.getRun(run.id)?.referencedPullRequestUrl).toBe(url);
+    });
+
+    it('still refuses a foreign PATH on the project’s own host, exactly as before', () => {
+      const { store, run } = freshRun('ship it', OWN);
+      store.appendEvent(run.id, {
+        type: 'result',
+        result: 'Upstream: https://gitlab.com/other/widgets/-/merge_requests/9.',
+      });
+      expect(store.getRun(run.id)?.referencedPullRequestUrl).toBeUndefined();
+    });
+
+    it('ignores the port — one instance is reached on several', () => {
+      const { store, run } = freshRun('ship it', {
+        owner: 'group',
+        name: 'repo',
+        host: 'gitlab.acme.internal',
+      });
+      store.appendEvent(run.id, {
+        type: 'result',
+        result: 'Ours: http://gitlab.acme.internal:8929/group/repo/-/merge_requests/12.',
+      });
+      expect(store.getRun(run.id)?.referencedPullRequestUrl).toBe(
+        'http://gitlab.acme.internal:8929/group/repo/-/merge_requests/12',
+      );
+    });
+
+    it('a host-less handle keeps comparing paths alone — an older cezar armed one', () => {
+      const { store, run } = freshRun('ship it', { owner: 'acme', name: 'widgets' });
+      store.appendEvent(run.id, {
+        type: 'result',
+        result: 'See https://gitlab.internal.corp/acme/widgets/-/merge_requests/7.',
+      });
+      expect(store.getRun(run.id)?.referencedPullRequestUrl).toBe(
+        'https://gitlab.internal.corp/acme/widgets/-/merge_requests/7',
+      );
+    });
+
+    it('refuses a github.com PR sharing the path of a GitLab project', () => {
+      const { store, run } = freshRun('ship it', OWN);
+      store.appendEvent(run.id, {
+        type: 'result',
+        result: 'Compare https://github.com/acme/widgets/pull/7.',
+      });
+      expect(store.getRun(run.id)?.referencedPullRequestUrl).toBeUndefined();
+    });
+
+    it('an unknown handle adopts anything — pre-#945 behavior is untouched', () => {
+      const { store, run } = freshRun('ship it', null);
+      store.appendEvent(run.id, {
+        type: 'result',
+        result: 'See https://gitlab.internal.corp/acme/widgets/-/merge_requests/7.',
+      });
+      expect(store.getRun(run.id)?.referencedPullRequestUrl).toBe(
+        'https://gitlab.internal.corp/acme/widgets/-/merge_requests/7',
+      );
     });
   });
 });

@@ -65,7 +65,7 @@
 | 5 | 5.6 | Drop the non-null assertions in the GitLab adapter | dispatch:cheap | done | pending |
 | 5 | 5.7 | Match http GitLab hosts in the bookmarklet | dispatch | done | pending |
 | 5 | 5.8 | Seed gitlab.com only for a registered GitLab project | dispatch | done | pending |
-| 5 | 5.9 | Make the foreign-reference guard host-aware | dispatch:capable | todo | — |
+| 5 | 5.9 | Make the foreign-reference guard host-aware | dispatch:capable | done | pending |
 | 5 | 5.10 | Forge-aware copy in the reference-status chip | dispatch | todo | — |
 | 5 | 5.11 | Correct the Second forge compatibility claims | inline | todo | — |
 | 5 | 5.12 | Land the spec so its citations resolve | inline | todo | — |

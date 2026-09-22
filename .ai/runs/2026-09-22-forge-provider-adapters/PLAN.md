@@ -43,6 +43,7 @@
 | 4 | 4.7 | Documentation for the second forge | inline | todo | — |
 | 1 | 1.7-review-fix | Type the driver-stub test payloads explicitly | inline | done | 5f7bae12 |
 | 1 | 1.8-review-fix | Keep the pre-seam draft-PR path when no forge resolves | inline | done | 7ec3ab5f |
+| 3 | 3.2-review-fix | Freeze the clock in the GitLab dry-run list test | inline | done | pending |
 
 ## Goal
 
@@ -178,6 +179,9 @@ All GitLab calls run `glab` with `cwd = repoRoot` through `forge/cli.ts`; `glab 
 #### 3.2 GitLab listIssues and listPRs
 - `glab issue list --output json --per-page N`, `glab mr list --output json --per-page N`; map to `ForgeItem` (`iid` → `number`, `web_url`, `author.username`, `labels`, `description` capped like GitHub, `user_notes_count`, `draft || work_in_progress` → `isDraft`, `checks: null` per D5). Label colors from `glab api projects/:fullpath/labels`, best-effort. Implement `listAll` too if 1.4 introduced it.
 - Tests: fixture → exact `ForgeItem[]`; empty, capped, malformed payloads.
+
+#### 3.2-review-fix Freeze the clock in the GitLab dry-run list test
+- Appended mid-run: the 3.2 dry-run test compared `listAll()` with `listIssues()`/`listPRs()`, each building its mock catalog from `Date.now()`, so it failed whenever the calls straddled a millisecond. Freeze `Date` in that test.
 
 #### 3.3 GitLab listComments with timeline events
 - `glab api projects/:fullpath/{issues|merge_requests}/:iid/notes?per_page=100&sort=asc` via the bounded page loop; user notes → `ForgeComment` (`kind:'comment'`), system notes and `resource_label_events` → `ForgeTimelineEvent` through the existing allowlist (labeled/unlabeled, closed/reopened/merged, assigned, renamed where the system note is recognizable), unknown kinds dropped; caps `THREAD_ENTRY_CAP` and the 8 000-char body cap.

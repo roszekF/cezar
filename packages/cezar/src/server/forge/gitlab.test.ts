@@ -505,15 +505,23 @@ describe('GitLab driver — listIssues / listPRs / listAll', () => {
 
   it('is available under CEZ_DRY_RUN=1 with a demo catalog, without shelling out', async () => {
     vi.stubEnv('CEZ_DRY_RUN', '1');
-    const driver = createGitlabDriver(freshRoot(), parsed());
-    const data = await driver.listAll!();
-    expect(data.available).toBe(true);
-    expect(data.repo).toBe('demo/demo');
-    expect(data.issues).toHaveLength(1);
-    expect(data.prs).toEqual([expect.objectContaining({ isDraft: true, checks: null, url: expect.stringContaining('gitlab.com/demo/demo') })]);
-    expect(await driver.listIssues()).toEqual(data.issues);
-    expect(await driver.listPRs()).toEqual(data.prs);
-    expect(execFileMock).not.toHaveBeenCalled();
+    // Each dry-run call builds its catalog from the clock; freeze it so the three calls below
+    // compare equal instead of racing a millisecond boundary.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-22T12:00:00Z'));
+    try {
+      const driver = createGitlabDriver(freshRoot(), parsed());
+      const data = await driver.listAll!();
+      expect(data.available).toBe(true);
+      expect(data.repo).toBe('demo/demo');
+      expect(data.issues).toHaveLength(1);
+      expect(data.prs).toEqual([expect.objectContaining({ isDraft: true, checks: null, url: expect.stringContaining('gitlab.com/demo/demo') })]);
+      expect(await driver.listIssues()).toEqual(data.issues);
+      expect(await driver.listPRs()).toEqual(data.prs);
+      expect(execFileMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -1,6 +1,6 @@
 import type { RepoInfo } from '../git.ts';
 import { createGithubDriver } from './github.ts';
-import type { ForgeDriver, ForgeKind } from './types.ts';
+import type { ForgeDriver, ForgeKind, ForgeListData, ForgeListOptions, ForgeSearchData } from './types.ts';
 
 /**
  * Forge resolution (cockpit-ui redesign spec §"Forge-driver seam"): map the
@@ -82,6 +82,45 @@ export function resolveForge(repoInfo: RepoInfo | null): ForgeDriver | null {
     return createGithubDriver(repoInfo.root, { owner: parsed.owner, repo: parsed.repo });
   }
   return null;
+}
+
+/** Why a forge read answers `available: false` when the project resolves to no driver at all (no
+ *  remote, a local-path remote, or a host no driver claims). Before the routes went through
+ *  `resolveForge` this text came from `gh`'s own stderr, so there was no literal to keep. */
+export const NO_FORGE_REASON = 'No supported forge remote detected';
+
+/**
+ * The `GET /api/github` listing through the driver seam (spec 2026-08-10-forge-provider-adapters).
+ * `listAll` serves the whole payload; a driver without it is listed through `listIssues` +
+ * `listPRs`, which cannot know the repo handle or label colors and so leave them out. A null forge
+ * and a failing fallback both land on the tab's quiet degrade — never a throw.
+ */
+export async function listForgeItems(forge: ForgeDriver | null, opts: ForgeListOptions): Promise<ForgeListData> {
+  if (!forge) return { available: false, reason: NO_FORGE_REASON, issues: [], prs: [] };
+  if (forge.listAll) return forge.listAll(opts);
+  try {
+    const [issues, prs] = await Promise.all([forge.listIssues(opts), forge.listPRs(opts)]);
+    return { available: true, syncedAt: new Date().toISOString(), issues, prs };
+  } catch (err) {
+    const reason = (err instanceof Error ? err.message : String(err)).split('\n')[0]?.trim();
+    return { available: false, reason: reason || `${forge.kind} listing failed`, issues: [], prs: [] };
+  }
+}
+
+/**
+ * The `GET /api/github/search` hits through the driver seam (#730, spec
+ * 2026-08-10-forge-provider-adapters). A null forge, or one without `searchItems`, degrades in the
+ * payload — the route never 5xxs over a missing capability.
+ */
+export async function searchForgeItems(
+  forge: ForgeDriver | null,
+  kind: 'issue' | 'pr',
+  query: string,
+  opts: { limit?: number },
+): Promise<ForgeSearchData> {
+  if (!forge) return { available: false, reason: NO_FORGE_REASON, items: [] };
+  if (!forge.searchItems) return { available: false, reason: `Search is not supported for this ${forge.kind} remote`, items: [] };
+  return forge.searchItems(kind, query, opts);
 }
 
 export type { ForgeDriver, ForgeAvailability, ForgeItem, ForgeKind, ForgePrStatus, ForgeRefKind } from './types.ts';

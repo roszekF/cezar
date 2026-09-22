@@ -135,6 +135,24 @@ export interface ForgeListOptions {
   limit?: number;
 }
 
+/** The `GET /api/github` payload — the tab's whole listing: availability, both open sets and the
+ *  label colors. Re-homed here from `GithubData` (which stays as an alias) so a driver can serve it
+ *  whole via `listAll` (spec 2026-08-10-forge-provider-adapters); BACKWARD_COMPATIBILITY.md §2
+ *  protects the shape — additive changes only. */
+export interface ForgeListData {
+  available: boolean;
+  /** Human-readable hint when unavailable (CLI missing, no remote, offline…). */
+  reason?: string;
+  /** owner/name, when known. */
+  repo?: string;
+  syncedAt?: string;
+  issues: ForgeItem[];
+  prs: ForgeItem[];
+  /** Repo-wide map of label name → 6-hex color (no `#`), so the UI can tint chips like GitHub
+   *  does. Additive (BACKWARD_COMPATIBILITY): absent on old payloads, chips fall back to neutral. */
+  labelColors?: Record<string, string>;
+}
+
 /** The `GET /api/github/search` payload (#730). The list tier (`listIssues`/`listPRs`) only ever
  *  returns OPEN items, so the tab's in-memory filter structurally cannot find a closed or merged
  *  item — this is the seam that asks the forge instead of re-filtering what we already have.
@@ -305,6 +323,11 @@ export interface ForgeDriver {
   detectCached(): ForgeAvailability | null;
   listIssues(opts?: ForgeListOptions): Promise<ForgeItem[]>;
   listPRs(opts?: ForgeListOptions): Promise<ForgeItem[]>;
+  /** The whole `/api/github` payload in one call — both open sets plus availability, repo handle
+   *  and label colors, which `listIssues`/`listPRs` cannot carry. Optional (spec
+   *  2026-08-10-forge-provider-adapters): a driver without it is listed through `listIssues` +
+   *  `listPRs` instead. Never throws. */
+  listAll?(opts?: ForgeListOptions): Promise<ForgeListData>;
   /** Search the forge for issues/PRs in ANY state (#730) — the escape hatch from the open-only
    *  list tier. Optional so the seam stays additive: a driver without it simply has no search
    *  fallback, and the route degrades to `available: false`. Never throws. */

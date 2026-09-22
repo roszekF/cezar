@@ -23,6 +23,7 @@ import type {
   ForgeCommentsData,
   ForgeDriver,
   ForgeItem,
+  ForgeListData,
   ForgeMergeInput,
   ForgeMergeMethod,
   ForgeMergeResult,
@@ -187,19 +188,9 @@ function mockGithubPrDiff(number: number): ForgePrDiffResult {
 /** One GitHub issue or pull request, flattened for the cockpit's GitHub tab. */
 export type GithubItem = ForgeItem;
 
-export interface GithubData {
-  available: boolean;
-  /** Human-readable hint when unavailable (`gh` missing, no remote, offline…). */
-  reason?: string;
-  /** owner/name, when known. */
-  repo?: string;
-  syncedAt?: string;
-  issues: GithubItem[];
-  prs: GithubItem[];
-  /** Repo-wide map of label name → 6-hex color (no `#`), so the UI can tint chips like GitHub
-   *  does. Additive (BACKWARD_COMPATIBILITY): absent on old payloads, chips fall back to neutral. */
-  labelColors?: Record<string, string>;
-}
+/** The `/api/github` payload — re-homed as the forge-neutral `ForgeListData` (spec
+ *  2026-08-10-forge-provider-adapters); the old name stays for existing imports. */
+export type GithubData = ForgeListData;
 
 // `gh … --json` output — validated at the boundary, extras stripped.
 const ghAuthor = z.object({ login: z.string() }).nullish();
@@ -2820,6 +2811,9 @@ export function createGithubDriver(repoRoot: string, repoRef: GithubRepoRef | nu
     listIssues: async (opts) => (await fetchGithub(repoRoot, opts?.refresh, opts?.limit)).issues,
 
     listPRs: async (opts) => (await fetchGithub(repoRoot, opts?.refresh, opts?.limit)).prs,
+
+    // The tab's whole payload, byte-identical to what `/api/github` has always served.
+    listAll: (opts) => fetchGithub(repoRoot, opts?.refresh, opts?.limit),
 
     // The open-only list tier's escape hatch (#730) — this is the only path that can reach a
     // closed or merged item.

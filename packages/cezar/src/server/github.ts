@@ -29,6 +29,7 @@ export type {
 } from './forge/github.ts';
 export type {
   ForgeComment,
+  ForgeListData,
   ForgeSearchData,
   ForgeCommentsData,
   ForgeTimelineEvent,

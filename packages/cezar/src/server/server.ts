@@ -185,8 +185,14 @@ import { agentHomePaths, expandTilde } from '../paths.ts';
 import { isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './capabilities.ts';
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
 import { browseDirectory, isInsideBrowseRoot, isLexicallyInsideBrowseRoot, resolveBrowseRoot } from './fs-browse.ts';
-import { parseRemote, resolveForge, type ForgeAvailability } from './forge/index.ts';
-import { fetchGithub, fetchGithubChecks, fetchGithubComments, fetchGithubPrDiff, fetchGithubRefStatus, forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, searchGithubItems, GithubPrNotFoundError, GH_CHECKS_MAX, GH_SEARCH_MAX, GH_REF_STATUS_MAX } from './github.ts';
+import {
+  listForgeItems,
+  parseRemote,
+  resolveForge,
+  searchForgeItems,
+  type ForgeAvailability,
+} from './forge/index.ts';
+import { fetchGithubChecks, fetchGithubComments, fetchGithubPrDiff, fetchGithubRefStatus, forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, GithubPrNotFoundError, GH_CHECKS_MAX, GH_SEARCH_MAX, GH_REF_STATUS_MAX } from './github.ts';
 import { ensureLaunchKey } from './launch-key.ts';
 import { openInTerminal } from './open-in-terminal.ts';
 import { agentCliRunner, detectOpenTargets, openFileInDefaultApp, openInApp } from './open-in-app.ts';
@@ -5267,7 +5273,10 @@ export function createApp(deps: ServerDeps) {
         const { root: repoRoot } = c.get('project');
         const query = c.req.valid('query');
         const limit = Number.parseInt(query.limit ?? '', 10);
-        return c.json(await fetchGithub(repoRoot, query.refresh === '1', Number.isFinite(limit) ? limit : 30));
+        const forge = resolveForge(await getRepoInfo(repoRoot));
+        return c.json(
+          await listForgeItems(forge, { refresh: query.refresh === '1', limit: Number.isFinite(limit) ? limit : 30 }),
+        );
       },
     )
 
@@ -5322,7 +5331,8 @@ export function createApp(deps: ServerDeps) {
       async (c) => {
         const { root: repoRoot } = c.get('project');
         const { kind, q, limit } = c.req.valid('query');
-        return c.json(await searchGithubItems(repoRoot, kind, q, limit));
+        const forge = resolveForge(await getRepoInfo(repoRoot));
+        return c.json(await searchForgeItems(forge, kind, q, { limit }));
       },
     )
 

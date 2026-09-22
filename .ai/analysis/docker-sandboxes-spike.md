@@ -23,6 +23,8 @@ The required checks (a), (b), (f), (g) and (j) pass, and so does (e). Only (d) (
 
 ## Spec deltas
 
+- **Pinned `GIT_COMMON_DIR` is not a full override** (found while building Phase 2, git 2.43): with a rewritten `.git/worktrees/<id>/commondir`, `rev-parse --git-common-dir` honors the env, but the ref store still reads the file and `HEAD` fails to resolve. The host helper therefore snapshots `commondir` and `gitdir` at registration and **fails closed** (non-existent `GIT_DIR`) if either changes. The VM can't rewrite them anyway (check g); this is the second layer.
+
 - A one-time Claude login for sandboxes needs the same temp-dir env: `sbx run --name <any> -e CLAUDE_CODE_TMPDIR=<writable dir>`, then `/login`. The README setup step must say so.
 - Parent directories of the mount points exist inside the VM **owned by root**. Claude Code refuses a temp dir it doesn't own (`Temp directory … is owned by uid 0 … Refusing to use it`), so sandboxed runs must set both `TMPDIR` and `CLAUDE_CODE_TMPDIR` to the per-run scratch `tmp/`.
 

@@ -61,7 +61,7 @@ What is protected now: **the shape of each route under `/api/v1`**, the three-wa
   - `GET /api/v1/workspace/events` reuses the same event names but stamps every payload with the owning `project` id — additively where the legacy payload is an object (`run` grows a `project` key; `run-deleted` becomes `{id, project}`), wrapped where it is not (`todos` → `{project, items}`; `usage` → `{project, usage}`). `usage` is **filtered per project** — one event per project that has live rows, never a stamped whole and never an empty-record clear. Three workspace-only event names exist for the registry/GUI-clone flows: `project-added`, `project-removed`, `checkout-progress` (payloads relayed verbatim from the emitter). The host-wide `provider-status` event is also workspace-only and deliberately **unstamped**: its additive coarse provider row is `{provider, status, hint?, authFailureId?, enabled?}`. It is emitted on a runtime-authentication latch transition, a successful provider enablement change, and a successful incident-safe retry; runtime rows carry the fixed hint and opaque incident id, while enablement/retry rows carry the current `enabled` value. Evolution is additive: a new workspace event name is inert to older consumers, and subscribing never force-instantiates a project (a lazily-built project's events join streams already open).
 - WebSocket: `GET /api/v1/ws` — the topic subscription bus (spec `.ai/specs/2026-07-23-websocket-subscriptions.md`), upgrade-only and workspace-level (single-mount, never mirrored under `/api/v1/p/`). **The path is protected, the frame protocol is not.** The path is what the `packages/cezar/web/dist` bundle and the Vite dev proxy connect to and what the upgrade guard answers `403` on, so moving or removing it is breaking. The frames (`{type:'subscribe'|'unsubscribe',topic}` up; `{type:'event'|'error'|'ping',…}` down) and the topic names are deliberately **internal**: the cockpit bundle ships in lockstep with the server that serves it, there is no cross-version consumer, and unlike `/api/v1/events` nothing outside this repo can have scripted them. Topic names may therefore be added, renamed or dropped freely — but a topic's payload, when it mirrors an HTTP route's shape (`health` does), inherits that route's contract.
   - **Not covered by the §2 drift guard.** `packages/cezar/src/server/bc-route-inventory.test.ts` derives its inventory from a built app's route table, and an upgrade-only endpoint is not in it (the socket is attached to the raw HTTP server, not to Hono) — so this entry is maintained by hand. Any future upgrade route needs the same treatment.
-- **Forge-agnostic since spec `.ai/specs/2026-08-10-forge-provider-adapters.md`:** every `/api/v1/github*` path below keeps its exact URL, method, payload shape and status codes, and now answers for whichever forge the project's remote belongs to (GitHub via `gh`, GitLab via `glab`). A capability a forge's driver does not implement answers that family's existing in-payload degradation (`{available: false, reason}`), never a new status code: on GitLab that is `/github/ref-status`, `/github/prs/:number/merge-state` and `POST /github/prs/:number/merge` (whose reason reads "Merging from cezar is not supported for GitLab merge requests"). See the dedicated section at the end of this file.
+- **Forge-agnostic since spec `.ai/specs/2026-08-10-forge-provider-adapters.md`:** every `/api/v1/github*` path below keeps its exact URL, method, payload shape and status codes, and now answers for whichever forge the project's remote belongs to (GitHub via `gh`, GitLab via `glab`). A capability a forge's driver does not implement answers with that ROUTE's existing refusal, never a new status code: `/github/ref-status` and `/github/prs/:number/merge-state` degrade in the payload (`{available: false, reason}`), while `POST /github/prs/:number/merge` answers `409 {error}` — exactly as it has answered a project with no merge support since before this branch (`GitHub merge is unavailable`); on GitLab only the sentence is new (`Merging from cezar is not supported for GitLab merge requests`, which the merge-state read uses as its `reason`). See the dedicated section at the end of this file.
 - Repo/GitHub: `GET /api/v1/github`, `GET /api/v1/github/checks`, `GET /api/v1/github/search`, `GET /api/v1/github/ref-status`, `GET /api/v1/github/comments/:kind/:number`, `GET /api/v1/github/prs/:number/changes`, `GET /api/v1/github/prs/:number/merge-state`, `POST /api/v1/github/prs/:number/merge`, `GET /api/v1/repo`, `GET /api/v1/repo/{diff,changes}`, `GET /api/v1/repo/commit/:sha`, `POST /api/v1/repo/branch`, `GET/PUT /api/v1/config`, `GET/PUT /api/v1/ui-state`
   - `GET /api/v1/github/comments/:kind/:number` (#499) returns `{available, reason?, comments[], truncated?, events?}`. `events?` is additive (#525) and may be absent entirely when the timeline fetch degrades; `comments[]` keeps its exact shape, contents and cap regardless of event volume.
   - `GET /api/v1/github/checks?prs=<csv>` (#664) is additive: the list call (`GET /api/v1/github`) stopped eagerly fetching `statusCheckRollup` (the dominant cost on repos with many open PRs), so a PR row's `checks` comes back `null` from the list and is hydrated lazily through this endpoint for on-screen rows. `prs` is a comma-separated list of positive PR numbers, capped at 100 (400 on a malformed list); the response is `{available, checks}` (a `number → 'passing'|'failing'|'pending'|null` map) or `{available: false, reason}`, and degrades exactly like the list — never a 5xx. `GET /api/v1/github`'s response shape is unchanged: `checks` was already optional/nullable, so a `null` from the list is not a new shape.
@@ -322,11 +322,22 @@ added, renamed or removed.
   lockstep with its server, and `@open-mercato/cezar-api-client` is private, so no external package
   mirrors these literals.
 - **`repoUrl?` on `GET /api/v1/projects`** is now built from the remote's own origin and full
-  project path, so it answers for GitHub Enterprise and GitLab subgroups too. GitHub.com projects
-  keep their exact previous value.
+  project path, so it answers for GitHub Enterprise and GitLab subgroups too. A github.com project
+  with an ordinary `https://` or `git@` remote keeps its exact previous value. The one exception is
+  a remote whose own web origin is not plain `https://<host>`: before this branch the URL was
+  rebuilt as `https://<host>/<owner>/<repo>` whatever the remote said, and it now preserves the
+  remote's scheme and port (Decision D3 — an on-prem instance is routinely `http` on a custom
+  port), so an `http://github.com/o/r` remote answers `http://github.com/o/r` where it used to
+  answer `https://…`. The value stays a bare web root the cockpit links to; only that rewrite is
+  gone.
 - **Capability degradation, not new errors:** a GitLab project answers the in-payload
-  `{available: false, reason}` for reference statuses and merge state/merge, because the GitLab
-  driver deliberately implements neither (chips render neutral, the merge panel reads unavailable).
+  `{available: false, reason}` for reference statuses (`GET /api/v1/github/ref-status`) and merge
+  state (`GET /api/v1/github/prs/:number/merge-state`), because the GitLab driver deliberately
+  implements neither (chips render neutral, the merge panel reads unavailable). `POST
+  /api/v1/github/prs/:number/merge` is the one that is not an in-payload degradation: it answers
+  `409 {error: 'Merging from cezar is not supported for GitLab merge requests'}` — the same status
+  code and shape a forge without merge support has always answered there, with a forge-specific
+  sentence in place of `GitHub merge is unavailable`.
 - **Automations stay github.com-only and stay where they were.** `GET /api/v1/automations` reports
   `available: false` with the reason `GitHub automations need a GitHub remote` for a non-GitHub
   forge (the no-remote case keeps `No GitHub remote is configured`), and a GitHub-event poller is
@@ -337,11 +348,13 @@ added, renamed or removed.
   host. No route, status code, schema, gate or nav item changed, and schedule automations are
   unaffected — a GitLab project behaves exactly like a repo with no GitHub remote did before.
 - **`POST /api/v1/projects/checkout`** additionally accepts GitLab URLs (https/ssh/scp, subgroups)
-  on discovered GitLab hosts; `owner/repo` and every GitHub spelling behave exactly as before. Two
-  text changes, no shape change: the rejection now reads `not a git forge repository: …` (400) and a
-  GitLab source without `glab` answers 503 with `glab CLI not found — install the GitLab CLI and run
-  \`glab auth login\``. A GitLab clone stores `credential.<origin>.helper = !glab auth git-credential`
-  in the clone, mirroring what the GitHub path does with `gh`.
+  on discovered GitLab hosts; `owner/repo` and every GitHub spelling behave exactly as before. Three
+  text changes, no shape change: the body validator's 400 message reads `url must be a git forge
+  repository (GitHub or GitLab)` (was `url must be a GitHub repository`), the resolver's own
+  rejection reads `not a git forge repository: …` (400), and a GitLab source without `glab` answers
+  503 with `glab CLI not found — install the GitLab CLI and run \`glab auth login\``. A GitLab clone
+  stores `credential.<origin>.helper = !glab auth git-credential` in the clone, mirroring what the
+  GitHub path does with `gh`.
 - **Run records and in-band markers:** `runs/store.ts` and `runs/task-refs.ts` additionally
   recognize `…/-/merge_requests/N` and `…/-/issues/N` URLs and `glab mr create` output; every
   GitHub pattern is unchanged, and no persisted field changed shape or requiredness (§3, §8).

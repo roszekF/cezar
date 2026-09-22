@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RepoInfo } from '../git.ts';
 import { forgeKindOfRemote, parseRemote, resolveForge } from './index.ts';
+import type { ForgeDriver } from './types.ts';
 
 /** Forge resolution (spec §"Forge-driver seam"): remote host → driver | null. */
 
@@ -88,5 +89,36 @@ describe('GitHub driver viewUrl', () => {
     ['commit', 'abc1234', 'https://github.com/acme/demo/commit/abc1234'],
   ] as const)('%s → %s', (kind, ref, expected) => {
     expect(driver.viewUrl(kind, ref)).toBe(expected);
+  });
+});
+
+describe('ForgeDriver optional capabilities', () => {
+  // Type-level (spec 2026-08-10-forge-provider-adapters § Driver interface changes): a driver
+  // implementing only the required members must compile — every capability beyond them
+  // (search, merge, diff, comments, checks, ref status) is optional, and routes degrade in-payload.
+  const minimal: ForgeDriver = {
+    kind: 'gitlab',
+    detect: async () => ({ available: false, reason: 'test' }),
+    detectCached: () => null,
+    listIssues: async () => [],
+    listPRs: async () => [],
+    createPR: async () => ({ ok: false, error: 'test' }),
+    prStatus: async () => null,
+    viewUrl: () => null,
+  };
+
+  it('allows omitting every optional method', () => {
+    expect(minimal.searchItems).toBeUndefined();
+    expect(minimal.prMergeState).toBeUndefined();
+    expect(minimal.mergePR).toBeUndefined();
+    expect(minimal.prDiff).toBeUndefined();
+    expect(minimal.listComments).toBeUndefined();
+    expect(minimal.listChecks).toBeUndefined();
+    expect(minimal.refStatus).toBeUndefined();
+  });
+
+  it('still resolves no driver for a gitlab remote', () => {
+    expect(forgeKindOfRemote('git@gitlab.com:acme/demo.git')).toBeNull();
+    expect(resolveForge(info('git@gitlab.com:acme/demo.git'))).toBeNull();
   });
 });

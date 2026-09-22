@@ -35,4 +35,8 @@ export type {
   ForgeTimelineEventKind,
   ForgePrDiffResult,
   ForgePrChange,
+  ForgeChecksData,
+  ForgeChecksGlyph,
+  ForgeRefStatusData,
+  ForgeReferenceStatus,
 } from './forge/types.ts';

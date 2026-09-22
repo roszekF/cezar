@@ -13,7 +13,7 @@
 
 | Phase | Step | Title | Exec | Status | Commit |
 |-------|------|-------|------|--------|--------|
-| 1 | 1.1 | Widen ForgeKind and add optional driver capabilities | dispatch | todo | — |
+| 1 | 1.1 | Widen ForgeKind and add optional driver capabilities | dispatch | done | pending |
 | 1 | 1.2 | Widen the contract schemas and their narrowing consumers | dispatch | todo | — |
 | 1 | 1.3 | Extract forge/cli.ts shared adapter plumbing | dispatch:capable | todo | — |
 | 1 | 1.4 | Route GET /github and /github/search through the driver | dispatch:capable | todo | — |

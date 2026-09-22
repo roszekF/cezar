@@ -7,6 +7,8 @@ import type {
   DraftPrInput,
   DraftPrOutcome,
   ForgeAvailability,
+  ForgeChecksData,
+  ForgeChecksGlyph,
   ForgeComment,
   ForgeCommentsData,
   ForgeDriver,
@@ -20,6 +22,8 @@ import type {
   ForgePrStatus,
   ForgePrDiffResult,
   ForgeRefKind,
+  ForgeRefStatusData,
+  ForgeReferenceStatus,
   ForgeSearchData,
   ForgeTimelineEvent,
   ForgeTimelineEventKind,
@@ -1172,12 +1176,12 @@ export async function fetchCommitChecks(
 // query. Mirrors `fetchCommentCounts` / `fetchCommitChecks`: aliased so N PRs cost one
 // subprocess, and any failure degrades to absent glyphs rather than failing the tab.
 
-/** The single enum a PR row's checks glyph renders (never `undefined` on the wire). */
-export type ChecksGlyph = 'passing' | 'failing' | 'pending' | null;
+/** Re-homed to `forge/types.ts` as `ForgeChecksGlyph` (spec 2026-08-10-forge-provider-adapters);
+ *  the old name stays as an alias so no importer changes. */
+export type ChecksGlyph = ForgeChecksGlyph;
 
-export type GithubChecksData =
-  | { available: true; checks: Record<number, ChecksGlyph> }
-  | { available: false; reason: string };
+/** Re-homed to `forge/types.ts` as `ForgeChecksData`; alias kept for existing importers. */
+export type GithubChecksData = ForgeChecksData;
 
 /** PR numbers per checks query. Aliases resolve independently (a failed chunk costs only its own
  *  glyphs); bounded so an unbounded number list can't blow the query size limit. Also the route's
@@ -1333,35 +1337,12 @@ function mockGithubChecks(numbers: number[]): GithubChecksData {
 // Deliberately NOT `prMergeState`: that answers "may I press Merge on THIS one" and costs a
 // request (plus a merge-policy lookup) per PR. A table needs a glyph per row, not a merge gate.
 
-/** Where a referenced PR or issue stands. Mirrored by `referenceStatusSchema` in the contract —
- *  see there for why PR `closed` and issue `completed` are separate words. */
-export type ReferenceStatus =
-  | 'draft'
-  | 'review-required'
-  | 'changes-requested'
-  | 'checks-pending'
-  | 'checks-failing'
-  | 'ready'
-  | 'merged'
-  | 'closed'
-  | 'open'
-  | 'completed'
-  | 'not-planned';
+/** Re-homed to `forge/types.ts` as `ForgeReferenceStatus` (spec 2026-08-10-forge-provider-adapters);
+ *  alias kept for existing importers. */
+export type ReferenceStatus = ForgeReferenceStatus;
 
-export type GithubRefStatusData =
-  | {
-      available: true;
-      prs: Record<number, ReferenceStatus>;
-      issues: Record<number, ReferenceStatus>;
-      /** The OPEN pull requests among them that do not merge into their base — the second axis,
-       *  never folded into a status. Optional on the wire, and absent means "nothing is known"
-       *  rather than "no conflicts"; see `conflicts` in the contract. */
-      conflicts?: number[];
-      /** When to ask again, or `null` when nothing here can change. See `recheckAfterMs` in the
-       *  contract for why the SERVER answers this. */
-      recheckAfterMs: number | null;
-    }
-  | { available: false; reason: string; recheckAfterMs: number | null };
+/** Re-homed to `forge/types.ts` as `ForgeRefStatusData`; alias kept for existing importers. */
+export type GithubRefStatusData = ForgeRefStatusData;
 
 /** Numbers per kind in one ref-status query — the same bound, and for the same reasons, as
  *  `GH_CHECKS_MAX`: aliases resolve independently, and the query size stays finite. Taken from the

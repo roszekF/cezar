@@ -1,7 +1,18 @@
 import { z } from 'zod';
-import { createSwrCache, isNotFound, registerProjectCacheEvictor, runCli } from './cli.ts';
+import { createSwrCache, deleteKeysWithPrefix, fetchBoundedPages, isNotFound, registerProjectCacheEvictor, runCli } from './cli.ts';
+import { TIMELINE_BUDGET_MS, TIMELINE_EVENT_CAP, TIMELINE_MAX_PAGES, TIMELINE_MIN_PAGE_MS, THREAD_ENTRY_CAP } from './github.ts';
 import type { ParsedRemote } from './index.ts';
-import type { ForgeAvailability, ForgeDriver, ForgeItem, ForgeListData, ForgeListOptions } from './types.ts';
+import type {
+  ForgeAvailability,
+  ForgeComment,
+  ForgeCommentsData,
+  ForgeDriver,
+  ForgeItem,
+  ForgeListData,
+  ForgeListOptions,
+  ForgeTimelineEvent,
+  ForgeTimelineEventKind,
+} from './types.ts';
 
 /**
  * The GitLab forge driver (spec 2026-08-10-forge-provider-adapters, Phase 3) — every `glab` call
@@ -10,9 +21,10 @@ import type { ForgeAvailability, ForgeDriver, ForgeItem, ForgeListData, ForgeLis
  *
  * Step 3.1 built the skeleton: availability (`detect` / `detectCached`) and registration. Step 3.2
  * adds the list tier (`listIssues`/`listPRs`/`listAll`) — both open-only, mirroring `fetchGithub`'s
- * `GET /github` tier. The remaining optional capabilities (`listComments`, `listChecks`, …) stay
- * absent until their own Steps, which the routes already degrade in the payload (`… is not
- * supported for this gitlab remote`).
+ * `GET /github` tier. Step 3.3 adds `listComments` — the conversation thread, assembled from the
+ * notes + resource-event endpoints since GitLab has no single timeline call like GitHub's. The
+ * remaining optional capabilities (`listChecks`, …) stay absent until their own Steps, which the
+ * routes already degrade in the payload (`… is not supported for this gitlab remote`).
  */
 
 /** The ENOENT hint (spec § Edge Cases — glab not installed). A literal rather than
@@ -302,6 +314,285 @@ async function fetchGitlabList(repoRoot: string, parsed: ParsedRemote, opts?: Fo
   }
 }
 
+// ---- listComments with timeline events (Step 3.3) --------------------------------------------
+// GitLab has no single "timeline" endpoint like GitHub's — the conversation thread is assembled
+// from THREE `glab api` calls: the notes (user comments + system notes in one stream), the label
+// events and the state-change events. Every one of them runs through the shared bounded-page loop
+// on GitHub's own budget constants (spec 2026-08-10-forge-provider-adapters, Step 3.3: "page
+// through fetchBoundedPages with GitHub's budget constants"), so a huge thread degrades the same
+// way on either forge rather than hanging the request. MR approvals are GitLab's own resource, not
+// a note or an event `glab api` exposes here, and are deliberately NOT synthesized as
+// `kind:'review'` — GitHub's `reviewed` timeline rows are the one thing this thread does not mirror.
+
+const COMMENT_BODY_CAP = 8_000;
+const NOTES_PAGE_SIZE = 100;
+
+const glNoteAuthorSchema = z.object({ username: z.string(), avatar_url: z.string().nullish() }).nullish();
+const glNoteSchema = z.object({
+  id: z.number(),
+  body: z.string().nullish(),
+  author: glNoteAuthorSchema,
+  created_at: z.string(),
+  system: z.boolean(),
+});
+type GlNoteRow = z.infer<typeof glNoteSchema>;
+
+const glLabelEventSchema = z.object({
+  id: z.number(),
+  user: z.object({ username: z.string(), avatar_url: z.string().nullish() }).nullish(),
+  created_at: z.string(),
+  action: z.string(), // 'add' | 'remove' — a third value (none exists today) simply drops the row
+  label: z.object({ name: z.string(), color: z.string().nullish() }).nullish(),
+});
+type GlLabelEventRow = z.infer<typeof glLabelEventSchema>;
+
+const glStateEventSchema = z.object({
+  id: z.number(),
+  user: z.object({ username: z.string(), avatar_url: z.string().nullish() }).nullish(),
+  created_at: z.string(),
+  state: z.string(),
+});
+type GlStateEventRow = z.infer<typeof glStateEventSchema>;
+
+/** `state` values `glab api …/resource_state_events` reports that this thread renders — an
+ *  allowlist over `ForgeTimelineEventKind`, never widened (types.ts). GitLab also emits other
+ *  transitions (locked-adjacent housekeeping) this endpoint doesn't return today; if it ever does,
+ *  an unmapped `state` is dropped exactly like an unmapped system note. */
+const STATE_EVENT_KIND: Record<string, ForgeTimelineEventKind> = {
+  closed: 'closed',
+  reopened: 'reopened',
+  merged: 'merged',
+};
+
+/** `created_at` normalized to a sortable ISO string, or null when it doesn't parse — dropped
+ *  rather than merged at an arbitrary spot in the thread (mirrors `normalizeEvents` in github.ts). */
+function isoOrNull(raw: string): string | null {
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+/** GitLab renders some system notes (title changes) with an HTML diff of the old/new value baked
+ *  into `body`. Stripping tags recovers the plain "changed title from X to Y" text regardless of
+ *  how much of X and Y the diff highlighted, without parsing the diff markup itself. */
+function stripHtml(body: string): string {
+  return body.replace(/<[^>]+>/g, '');
+}
+
+/** Table-driven, conservative system-note → event mapping (spec Step 3.3): a note whose stripped
+ *  text matches none of these is dropped, exactly like an unrecognized GitHub timeline kind. Order
+ *  matters only in that `assigned`/`unassigned` are distinct prefixes — never ambiguous. */
+const SYSTEM_NOTE_RULES: ReadonlyArray<{ kind: ForgeTimelineEventKind; subject: (plain: string) => string | undefined }> = [
+  { kind: 'assigned', subject: (plain) => /^assigned to @([\w.-]+)/.exec(plain)?.[1] },
+  { kind: 'unassigned', subject: (plain) => /^unassigned @([\w.-]+)/.exec(plain)?.[1] },
+  { kind: 'renamed', subject: (plain) => /^changed title from .+ to (.+)$/s.exec(plain)?.[1]?.trim() },
+];
+
+function toForgeComment(row: GlNoteRow, urlBase: string, kind: 'issue' | 'pr', number: number): ForgeComment {
+  const segment = kind === 'issue' ? 'issues' : 'merge_requests';
+  return {
+    id: row.id,
+    author: row.author?.username ?? '?',
+    avatarUrl: row.author?.avatar_url ?? undefined,
+    createdAt: isoOrNull(row.created_at) ?? row.created_at,
+    body: (row.body ?? '').slice(0, COMMENT_BODY_CAP),
+    kind: 'comment',
+    url: `${urlBase}/-/${segment}/${number}#note_${row.id}`,
+  };
+}
+
+function toLabelEvent(row: GlLabelEventRow): ForgeTimelineEvent | null {
+  const kind: ForgeTimelineEventKind | null = row.action === 'add' ? 'labeled' : row.action === 'remove' ? 'unlabeled' : null;
+  if (!kind) return null; // an unmapped action → dropped, never rendered
+  const createdAt = isoOrNull(row.created_at);
+  if (!createdAt) return null;
+  const event: ForgeTimelineEvent = { id: `evt-${row.id}`, kind, actor: row.user?.username ?? '?', createdAt };
+  if (row.user?.avatar_url) event.avatarUrl = row.user.avatar_url;
+  if (row.label) {
+    event.label = { name: row.label.name };
+    // Normalized to 6-hex, no `#` — the same form `fetchGitlabLabelColors` produces.
+    if (row.label.color) event.label.color = row.label.color.replace(/^#/, '').toLowerCase();
+  }
+  return event;
+}
+
+function toStateEvent(row: GlStateEventRow): ForgeTimelineEvent | null {
+  const kind = STATE_EVENT_KIND[row.state];
+  if (!kind) return null; // an unknown state → dropped, never rendered
+  const createdAt = isoOrNull(row.created_at);
+  if (!createdAt) return null;
+  const event: ForgeTimelineEvent = { id: `evt-${row.id}`, kind, actor: row.user?.username ?? '?', createdAt };
+  if (row.user?.avatar_url) event.avatarUrl = row.user.avatar_url;
+  return event;
+}
+
+function toSystemNoteEvent(row: GlNoteRow): ForgeTimelineEvent | null {
+  const plain = stripHtml(row.body ?? '').trim();
+  for (const rule of SYSTEM_NOTE_RULES) {
+    const subject = rule.subject(plain);
+    if (!subject) continue;
+    const createdAt = isoOrNull(row.created_at);
+    if (!createdAt) return null;
+    const event: ForgeTimelineEvent = { id: `evt-${row.id}`, kind: rule.kind, actor: row.author?.username ?? '?', createdAt, subject };
+    if (row.author?.avatar_url) event.avatarUrl = row.author.avatar_url;
+    return event;
+  }
+  return null; // e.g. "added N commit(s)", "requested review from @x" — conservative, dropped
+}
+
+/** One `glab api` endpoint under the notes call's page loop and budget — used for both
+ *  `resource_label_events` and `resource_state_events`, which share the same paging shape. */
+async function fetchGitlabResourceEvents<T>(
+  repoRoot: string,
+  endpointBase: string,
+  resource: string,
+  schema: z.ZodType<T>,
+): Promise<{ rows: T[]; stoppedShort: boolean }> {
+  const pages = await fetchBoundedPages(
+    (page, timeoutMs) => glab(repoRoot, ['api', `${endpointBase}/${resource}?per_page=${NOTES_PAGE_SIZE}&page=${page}`], timeoutMs),
+    { maxPages: TIMELINE_MAX_PAGES, budgetMs: TIMELINE_BUDGET_MS, minPageMs: TIMELINE_MIN_PAGE_MS, pageSize: NOTES_PAGE_SIZE },
+  );
+  return { rows: z.array(schema).parse(pages.rows), stoppedShort: pages.stoppedShort };
+}
+
+/** Per-thread cache, same shape and TTL as the list cache — keyed `repoRoot\0kind#number` so two
+ *  projects' issue/MR #42 can never collide (the bug the Drift note found in the GitHub prefix
+ *  eviction: `evictForgeProjectCaches` here uses `deleteKeysWithPrefix` from the start). */
+const commentsCache = new Map<string, { at: number; data: ForgeCommentsData }>();
+const COMMENTS_CACHE_MAX = 50;
+
+function cacheComments(key: string, data: ForgeCommentsData): void {
+  commentsCache.delete(key); // re-insert so this key becomes the newest
+  commentsCache.set(key, { at: Date.now(), data });
+  while (commentsCache.size > COMMENTS_CACHE_MAX) {
+    const oldest = commentsCache.keys().next();
+    if (oldest.done) break;
+    commentsCache.delete(oldest.value);
+  }
+}
+
+registerProjectCacheEvictor((repoRoot) => deleteKeysWithPrefix(commentsCache, `${repoRoot}\0`));
+
+/** CEZ_DRY_RUN=1 — a small fixed thread (one comment, one labeled event), mirroring GitHub's
+ *  `mockGithubComments` closely enough to demo the feature offline for either forge. */
+function mockGitlabComments(kind: 'issue' | 'pr'): ForgeCommentsData {
+  const base = Date.now() - 3_600_000;
+  const at = (offset: number) => new Date(base + offset).toISOString();
+  const segment = kind === 'issue' ? 'issues' : 'merge_requests';
+  return {
+    available: true,
+    comments: [
+      {
+        id: 1,
+        author: 'demo',
+        avatarUrl: 'https://gitlab.com/uploads/-/system/user/avatar/1/avatar.png',
+        createdAt: at(0),
+        body: 'Thanks for the report — I can reproduce it on a forked pipeline.',
+        kind: 'comment',
+        url: `https://gitlab.com/demo/demo/-/${segment}/1#note_1`,
+      },
+    ],
+    events: [
+      {
+        id: 'evt-100',
+        kind: 'labeled',
+        actor: 'demo',
+        createdAt: at(600_000),
+        label: { name: 'bug', color: 'd73a4a' },
+      },
+    ],
+  };
+}
+
+/** The `GET /api/github/comments/:kind/:number` payload for a GitLab remote (Step 3.3). Never
+ *  throws: a CLI failure, missing binary or malformed payload on the notes call (page 1) all land
+ *  on `{available: false, reason, comments: []}`; a failure on the label/state event endpoints
+ *  degrades to comments-only — same "timeline degraded to comments-only" shape GitHub's driver
+ *  answers on its own endpoint failures. */
+async function fetchGitlabComments(
+  repoRoot: string,
+  parsed: ParsedRemote,
+  kind: 'issue' | 'pr',
+  number: number,
+  refresh = false,
+): Promise<ForgeCommentsData> {
+  if (process.env.CEZ_DRY_RUN === '1') return mockGitlabComments(kind);
+  const key = `${repoRoot}\0${kind}#${number}`;
+  const hit = commentsCache.get(key);
+  if (!refresh && hit && Date.now() - hit.at < CACHE_MS) return hit.data;
+
+  const endpointBase = `projects/:fullpath/${kind === 'issue' ? 'issues' : 'merge_requests'}/${number}`;
+
+  let notesRows: unknown[];
+  let notesStoppedShort: boolean;
+  try {
+    const pages = await fetchBoundedPages(
+      (page, timeoutMs) =>
+        glab(
+          repoRoot,
+          ['api', `${endpointBase}/notes?per_page=${NOTES_PAGE_SIZE}&sort=asc&order_by=created_at&page=${page}`],
+          timeoutMs,
+        ),
+      { maxPages: TIMELINE_MAX_PAGES, budgetMs: TIMELINE_BUDGET_MS, minPageMs: TIMELINE_MIN_PAGE_MS, pageSize: NOTES_PAGE_SIZE },
+    );
+    notesRows = pages.rows;
+    notesStoppedShort = pages.stoppedShort;
+  } catch (err) {
+    const reason = isNotFound(err) ? GLAB_NOT_FOUND_REASON : glabFailureReason(err);
+    return { available: false, reason, comments: [] };
+  }
+
+  let notes: GlNoteRow[];
+  try {
+    notes = z.array(glNoteSchema).parse(notesRows);
+  } catch {
+    return { available: false, reason: 'glab api notes returned an unexpected response', comments: [] };
+  }
+
+  const urlBase = gitlabProjectWebUrl(repoRoot) ?? `${parsed.origin}/${parsed.path}`;
+  const commentRows = notes.filter((n) => !n.system);
+  const systemNoteRows = notes.filter((n) => n.system);
+
+  const sortedComments = commentRows
+    .map((row) => toForgeComment(row, urlBase, kind, number))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const commentsTruncated = sortedComments.length > THREAD_ENTRY_CAP;
+  const comments = commentsTruncated ? sortedComments.slice(0, THREAD_ENTRY_CAP) : sortedComments;
+
+  let events: ForgeTimelineEvent[] | undefined;
+  let eventsTruncated = false;
+  let eventsStoppedShort = false;
+  try {
+    const [labelEvents, stateEvents] = await Promise.all([
+      fetchGitlabResourceEvents(repoRoot, endpointBase, 'resource_label_events', glLabelEventSchema),
+      fetchGitlabResourceEvents(repoRoot, endpointBase, 'resource_state_events', glStateEventSchema),
+    ]);
+    const merged = [
+      ...labelEvents.rows.map(toLabelEvent),
+      ...stateEvents.rows.map(toStateEvent),
+      ...systemNoteRows.map(toSystemNoteEvent),
+    ]
+      .filter((e): e is ForgeTimelineEvent => e !== null)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    eventsTruncated = merged.length > TIMELINE_EVENT_CAP;
+    // slice(-cap), not slice(0, cap) — keep the NEWEST events, same rationale as normalizeEvents.
+    events = eventsTruncated ? merged.slice(-TIMELINE_EVENT_CAP) : merged;
+    eventsStoppedShort = labelEvents.stoppedShort || stateEvents.stoppedShort;
+  } catch {
+    // Resource-event endpoints failing degrades to comments-only — `events` stays absent, exactly
+    // like GitHub's timeline-fetch failure substituting the legacy comments-only call.
+    events = undefined;
+  }
+
+  const data: ForgeCommentsData = {
+    available: true,
+    comments,
+    truncated: commentsTruncated || eventsTruncated || notesStoppedShort || eventsStoppedShort || undefined,
+  };
+  if (events) data.events = events;
+  cacheComments(key, data);
+  return data;
+}
+
 /** `parsed` feeds `listAll`'s `repo` field and `viewUrl`'s origin + path fallback (Step 3.7). */
 export function createGitlabDriver(repoRoot: string, parsed: ParsedRemote): ForgeDriver {
   return {
@@ -315,6 +606,8 @@ export function createGitlabDriver(repoRoot: string, parsed: ParsedRemote): Forg
 
     // The tab's whole payload in one call — repo handle, both open sets, label colors.
     listAll: (opts) => fetchGitlabList(repoRoot, parsed, opts),
+
+    listComments: (kind, number, opts) => fetchGitlabComments(repoRoot, parsed, kind, number, !!opts?.refresh),
 
     // Step 4.1 implements draft merge requests.
     createPR: async () => ({ ok: false, error: 'Merge request creation is not implemented yet for GitLab' }),

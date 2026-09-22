@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { THREAD_ENTRY_CAP, TIMELINE_EVENT_CAP } from './github.ts';
 
 // Same technique as github.test.ts: `glab()` builds its runner from `promisify(execFile)` at module
 // load, so every probe below is driven through this mock — no real `glab` on the box, no network.
@@ -204,8 +205,8 @@ describe('GitLab driver — skeleton members (later steps implement them)', () =
 
   it('leaves the optional capabilities absent, so the routes degrade in the payload', () => {
     const driver = createGitlabDriver(freshRoot(), parsed());
-    // listAll is now implemented (Step 3.2) — everything else still lands on later Steps.
-    expect(driver.listComments).toBeUndefined();
+    // listAll (Step 3.2) and listComments (Step 3.3) are now implemented — everything else still
+    // lands on later Steps.
     expect(driver.listChecks).toBeUndefined();
     expect(driver.refStatus).toBeUndefined();
     expect(driver.searchItems).toBeUndefined();
@@ -503,6 +504,286 @@ describe('GitLab driver — listIssues / listPRs / listAll', () => {
     expect(data.prs).toEqual([expect.objectContaining({ isDraft: true, checks: null, url: expect.stringContaining('gitlab.com/demo/demo') })]);
     expect(await driver.listIssues()).toEqual(data.issues);
     expect(await driver.listPRs()).toEqual(data.prs);
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---- listComments with timeline events (Step 3.3) ---------------------------------------------
+// Notes trimmed from a real `glab api …/notes` response against gitlab.com's own `gitlab-org/cli`
+// project (captured 2026-09-22), usernames/avatars neutralized; the label-event row mirrors a real
+// `resource_label_events` capture the same way. `resource_state_events` was not in the original
+// capture, so those rows are synthesized in the documented REST shape
+// (`{id, user, created_at, state, resource_type, resource_id}`).
+
+const NOTE_COMMENT = {
+  id: 1001,
+  body: 'Thanks for reviewing — updated per your suggestion.',
+  author: { username: 'alice', avatar_url: 'https://example.com/avatars/alice.png' },
+  created_at: '2026-09-21T14:00:00.000Z',
+  system: false,
+};
+const NOTE_ASSIGNED = {
+  id: 1002,
+  body: 'assigned to @bob',
+  author: { username: 'alice' },
+  created_at: '2026-09-21T14:05:00.000Z',
+  system: true,
+};
+const NOTE_UNASSIGNED = {
+  id: 1003,
+  body: 'unassigned @bob',
+  author: { username: 'alice' },
+  created_at: '2026-09-21T14:06:00.000Z',
+  system: true,
+};
+// Real system notes for a title change carry an HTML diff of the old/new value — trimmed from the
+// captured fixture's markup shape, values neutralized.
+const NOTE_RENAMED = {
+  id: 1004,
+  body: '<p>changed title from <code class="idiff"><span class="idiff left right deletion">old title</span></code> to <code class="idiff"><span class="idiff left right addition">new title</span></code></p>',
+  author: { username: 'alice' },
+  created_at: '2026-09-21T14:07:00.000Z',
+  system: true,
+};
+const NOTE_UNMAPPED_COMMIT = {
+  id: 1005,
+  body: 'added 1 commit\n\n<ul><li>abc1234 - fix stuff</li></ul>',
+  author: { username: 'alice' },
+  created_at: '2026-09-21T14:08:00.000Z',
+  system: true,
+};
+const NOTE_UNMAPPED_REVIEW_REQUEST = {
+  id: 1006,
+  body: 'requested review from @carol',
+  author: { username: 'alice' },
+  created_at: '2026-09-21T14:09:00.000Z',
+  system: true,
+};
+
+const LABEL_EVENT_ADD = {
+  id: 2001,
+  user: { username: 'alice', avatar_url: 'https://example.com/avatars/alice.png' },
+  created_at: '2026-09-21T14:01:00.000Z',
+  action: 'add',
+  label: { name: 'bug', color: '#d73a4a' },
+};
+const LABEL_EVENT_REMOVE = {
+  id: 2002,
+  user: { username: 'bob' },
+  created_at: '2026-09-21T14:02:00.000Z',
+  action: 'remove',
+  label: { name: 'bug', color: '#d73a4a' },
+};
+
+const STATE_EVENT_CLOSED = { id: 3001, user: { username: 'alice' }, created_at: '2026-09-21T14:03:00.000Z', state: 'closed' };
+const STATE_EVENT_REOPENED = { id: 3002, user: { username: 'alice' }, created_at: '2026-09-21T14:04:00.000Z', state: 'reopened' };
+const STATE_EVENT_MERGED = { id: 3003, user: { username: 'alice' }, created_at: '2026-09-21T14:10:00.000Z', state: 'merged' };
+const STATE_EVENT_UNKNOWN = { id: 3004, user: { username: 'alice' }, created_at: '2026-09-21T14:11:00.000Z', state: 'draft' };
+
+type ApiHandler = ((page: number) => unknown) | { fail: string };
+
+/** Routes `glab api <path>` calls by a substring of the path (`/notes`, `/resource_label_events`,
+ *  `/resource_state_events`) to a per-page responder, so a test can drive the bounded page loop
+ *  for each endpoint independently. A path with no matching handler answers a plain command
+ *  failure — the "resource-events endpoint failing" cases rely on this. */
+function routeGlabApi(handlers: Partial<Record<'notes' | 'resource_label_events' | 'resource_state_events', ApiHandler>>) {
+  execFileMock.mockImplementation((...callArgs: unknown[]) => {
+    const cliArgs = callArgs[1] as string[];
+    const cb = callArgs[callArgs.length - 1] as Callback;
+    const path = cliArgs[1] ?? '';
+    const page = Number(/[?&]page=(\d+)/.exec(path)?.[1] ?? '1');
+    const key = (['notes', 'resource_label_events', 'resource_state_events'] as const).find((k) => path.includes(`/${k}`));
+    const handler = key ? handlers[key] : undefined;
+    if (handler === undefined) {
+      cb(Object.assign(new Error(`Command failed: glab ${cliArgs.join(' ')}`), { code: 1, stderr: 'glab: unknown command\n' }));
+      return;
+    }
+    if (typeof handler === 'function') {
+      cb(null, { stdout: JSON.stringify(handler(page)), stderr: '' });
+      return;
+    }
+    cb(Object.assign(new Error(`Command failed: glab ${cliArgs.join(' ')}`), { code: 1, stderr: `${handler.fail}\n` }));
+  });
+}
+
+/** A page-aware responder over a fixed row set — every case below has under 100 rows (one page)
+ *  except the caps test, which relies on this to serve real pagination. */
+const paged = (rows: unknown[]) => (page: number) => rows.slice((page - 1) * 100, page * 100);
+
+describe('GitLab driver — listComments with timeline events', () => {
+  beforeEach(() => {
+    vi.stubEnv('CEZ_DRY_RUN', '');
+    execFileMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('maps a user note to the exact ForgeComment, MR url grammar', async () => {
+    routeGlabApi({ notes: paged([NOTE_COMMENT]), resource_label_events: paged([]), resource_state_events: paged([]) });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listComments!('pr', 3950);
+    expect(data.available).toBe(true);
+    expect(data.comments).toEqual([
+      {
+        id: 1001,
+        author: 'alice',
+        avatarUrl: 'https://example.com/avatars/alice.png',
+        createdAt: '2026-09-21T14:00:00.000Z',
+        body: 'Thanks for reviewing — updated per your suggestion.',
+        kind: 'comment',
+        url: 'https://gitlab.com/acme/demo/-/merge_requests/3950#note_1001',
+      },
+    ]);
+  });
+
+  it('builds an issue comment url with the /-/issues/ grammar', async () => {
+    routeGlabApi({ notes: paged([NOTE_COMMENT]), resource_label_events: paged([]), resource_state_events: paged([]) });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listComments!('issue', 8564);
+    expect(data.comments[0]!.url).toBe('https://gitlab.com/acme/demo/-/issues/8564#note_1001');
+  });
+
+  it('maps every event kind: labeled, unlabeled, closed, reopened, merged, assigned, unassigned, renamed', async () => {
+    routeGlabApi({
+      notes: paged([NOTE_ASSIGNED, NOTE_UNASSIGNED, NOTE_RENAMED]),
+      resource_label_events: paged([LABEL_EVENT_ADD, LABEL_EVENT_REMOVE]),
+      resource_state_events: paged([STATE_EVENT_CLOSED, STATE_EVENT_REOPENED, STATE_EVENT_MERGED]),
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listComments!('pr', 3950);
+    const byKind = Object.fromEntries((data.events ?? []).map((e) => [e.kind, e]));
+    expect(byKind.labeled).toMatchObject({
+      id: 'evt-2001',
+      actor: 'alice',
+      avatarUrl: 'https://example.com/avatars/alice.png',
+      label: { name: 'bug', color: 'd73a4a' },
+    });
+    expect(byKind.unlabeled).toMatchObject({ id: 'evt-2002', actor: 'bob', label: { name: 'bug', color: 'd73a4a' } });
+    expect(byKind.closed).toMatchObject({ id: 'evt-3001', actor: 'alice' });
+    expect(byKind.reopened).toMatchObject({ id: 'evt-3002', actor: 'alice' });
+    expect(byKind.merged).toMatchObject({ id: 'evt-3003', actor: 'alice' });
+    expect(byKind.assigned).toMatchObject({ id: 'evt-1002', actor: 'alice', subject: 'bob' });
+    expect(byKind.unassigned).toMatchObject({ id: 'evt-1003', actor: 'alice', subject: 'bob' });
+    expect(byKind.renamed).toMatchObject({ id: 'evt-1004', actor: 'alice', subject: 'new title' });
+    expect(data.events).toHaveLength(8);
+  });
+
+  it('drops an unmapped system note and an unknown state event', async () => {
+    routeGlabApi({
+      notes: paged([NOTE_UNMAPPED_COMMIT, NOTE_UNMAPPED_REVIEW_REQUEST]),
+      resource_label_events: paged([]),
+      resource_state_events: paged([STATE_EVENT_UNKNOWN]),
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listComments!('pr', 3950);
+    expect(data.comments).toEqual([]);
+    expect(data.events).toEqual([]);
+  });
+
+  it('orders comments and events chronologically regardless of arrival order', async () => {
+    const late = { ...NOTE_COMMENT, id: 1, created_at: '2026-09-21T15:00:00.000Z' };
+    const early = { ...NOTE_COMMENT, id: 2, created_at: '2026-09-21T13:00:00.000Z' };
+    routeGlabApi({
+      notes: paged([late, early]),
+      resource_label_events: paged([LABEL_EVENT_REMOVE, LABEL_EVENT_ADD]), // remove is later than add
+      resource_state_events: paged([]),
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listComments!('pr', 3950);
+    expect(data.comments.map((c) => c.id)).toEqual([2, 1]);
+    expect(data.events!.map((e) => e.id)).toEqual(['evt-2001', 'evt-2002']);
+  });
+
+  it('caps comments at THREAD_ENTRY_CAP keeping the oldest, events at TIMELINE_EVENT_CAP keeping the newest', async () => {
+    const manyComments = Array.from({ length: THREAD_ENTRY_CAP + 10 }, (_, i) => ({
+      id: i + 1,
+      body: `comment ${i + 1}`,
+      author: { username: 'alice' },
+      created_at: new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString(),
+      system: false,
+    }));
+    const manyLabelEvents = Array.from({ length: TIMELINE_EVENT_CAP + 10 }, (_, i) => ({
+      id: i + 1,
+      user: { username: 'alice' },
+      created_at: new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString(),
+      action: 'add',
+      label: { name: `l${i}` },
+    }));
+    routeGlabApi({
+      notes: paged(manyComments),
+      resource_label_events: paged(manyLabelEvents),
+      resource_state_events: paged([]),
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listComments!('pr', 1);
+    expect(data.comments).toHaveLength(THREAD_ENTRY_CAP);
+    expect(data.comments[0]!.id).toBe(1); // oldest kept
+    expect(data.events).toHaveLength(TIMELINE_EVENT_CAP);
+    expect(data.events![data.events!.length - 1]!.id).toBe(`evt-${TIMELINE_EVENT_CAP + 10}`); // newest kept
+    expect(data.truncated).toBe(true);
+  });
+
+  it('a resource-events endpoint failing leaves comments intact and events absent', async () => {
+    routeGlabApi({
+      notes: paged([NOTE_COMMENT]),
+      resource_state_events: paged([]),
+      // no `resource_label_events` handler — that endpoint fails
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listComments!('pr', 3950);
+    expect(data.available).toBe(true);
+    expect(data.comments).toHaveLength(1);
+    expect(data.events).toBeUndefined();
+  });
+
+  it('reports the install hint when glab is not installed (ENOENT) on the notes call', async () => {
+    execFileMock.mockImplementation((...callArgs: unknown[]) => {
+      const cb = callArgs[callArgs.length - 1] as Callback;
+      cb(Object.assign(new Error('spawn glab ENOENT'), { code: 'ENOENT' }));
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listComments!('pr', 3950);
+    expect(data).toEqual({ available: false, reason: GLAB_NOT_FOUND_REASON, comments: [] });
+  });
+
+  it("a notes page-1 failure answers unavailable with glab's own first stderr line", async () => {
+    routeGlabApi({ notes: { fail: GLAB_401 } });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listComments!('pr', 3950);
+    expect(data).toEqual({ available: false, reason: GLAB_401, comments: [] });
+  });
+
+  it('a malformed notes payload answers unavailable with a clear reason', async () => {
+    routeGlabApi({ notes: () => [{ id: 'not-a-number' }], resource_label_events: paged([]), resource_state_events: paged([]) });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listComments!('pr', 3950);
+    expect(data).toEqual({ available: false, reason: 'glab api notes returned an unexpected response', comments: [] });
+  });
+
+  it('caches the thread per root/kind/number; refresh bypasses it', async () => {
+    routeGlabApi({ notes: paged([NOTE_COMMENT]), resource_label_events: paged([]), resource_state_events: paged([]) });
+    const root = freshRoot();
+    const driver = createGitlabDriver(root, parsed());
+    const first = await driver.listComments!('pr', 3950);
+    expect(first.comments).toHaveLength(1);
+
+    routeGlabApi({ notes: paged([]), resource_label_events: paged([]), resource_state_events: paged([]) }); // "server" changed
+    expect(await driver.listComments!('pr', 3950)).toEqual(first); // served from cache
+
+    const refreshed = await driver.listComments!('pr', 3950, { refresh: true });
+    expect(refreshed.comments).toEqual([]);
+  });
+
+  it('is available under CEZ_DRY_RUN=1 with a demo thread, without shelling out', async () => {
+    vi.stubEnv('CEZ_DRY_RUN', '1');
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listComments!('issue', 1);
+    expect(data.available).toBe(true);
+    expect(data.comments).toHaveLength(1);
+    expect(data.events).toHaveLength(1);
+    expect(data.events![0]!.kind).toBe('labeled');
     expect(execFileMock).not.toHaveBeenCalled();
   });
 });

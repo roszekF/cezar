@@ -27,3 +27,8 @@
 - Blocker found and fixed inline: 1.8 null-forge short-circuit skipped createDraftPr's autosave → 1.8-review-fix (7ec3ab5f).
 - Process note: the 1.7 executor landed a follow-up typing commit (5f7bae12) → recorded as row 1.7-review-fix; ea6aada9 alone fails typecheck (bisect gap, not rewritten — no history rewrites on a pushed branch). Executor rules now require typecheck BEFORE committing.
 - Delegations: 1.6+1.7 one executor (tier standard/sonnet), 1.8 (standard/sonnet).
+
+## 2026-09-22T14:33:29Z — checkpoint 3 (Phase 2 close: 2.1..2.4)
+- typecheck, npm test (7 407), test:unit (36) green. No UI touched → browser pass skipped.
+- Note: running npm run test:e2e rewrites committed screenshots under .ai/runs/2026-07-22-automatic-open-mercato-skills-updates/checkpoint-3-artifacts/ (skills-update.e2e side effect); restored with git checkout after checkpoint 2 — never commit them from this branch.
+- Delegations: 2.1 (standard/sonnet), 2.2 (capable/opus), 2.3+2.4 one executor (sonnet).

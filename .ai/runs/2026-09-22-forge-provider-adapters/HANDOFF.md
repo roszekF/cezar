@@ -1,16 +1,16 @@
 # Handoff — 2026-09-22-forge-provider-adapters
 
-**Last updated:** 2026-09-22T14:16:23Z
+**Last updated:** 2026-09-22T14:33:29Z
 **Branch:** feat/forge-provider-adapters (fork roszekF/cezar)
 **PR:** https://github.com/roszekF/cezar/pull/1 (draft)
-**Current phase/step:** Phase 2 Step 2.1
-**Last commit:** 7ec3ab5f — fix(forge): keep the pre-seam draft-PR path when no forge resolves
+**Current phase/step:** Phase 3 Step 3.1
+**Last commit:** ec1ee5e8 — feat(forge): build GitHub web links from the remote's own origin
 
 ## What just happened
-- Phase 1 complete (1.1–1.8 + two review-fix rows): every /github* route and POST /runs/:id/pr resolve through the driver. Checkpoint 2: full gate green (1 known flake); e2e fails on main too (35 vs 33 on branch) — see checkpoint-2-checks.md.
+- Phase 2 complete (2.1–2.4): discovery module + cache, host ladder wired into forge/index.ts with a boot/10-min warm-up, ParsedRemote.path/origin, GitHub viewUrl from origin. Checkpoint 3 green.
 
 ## Next concrete action
-- Implement Step 2.1 — forge/discovery.ts (well-known hosts, ~/.cache/cez/forge-hosts.json, gh/glab auth-status parsers, warmForgeDiscovery).
+- Implement Step 3.1 — forge/gitlab.ts skeleton + detect() (glab repo view --output json, SWR cache, web_url cache, registerProjectCacheEvictor) and register it in resolveForge for gitlab hosts.
 
 ## Blockers / open questions
 - none

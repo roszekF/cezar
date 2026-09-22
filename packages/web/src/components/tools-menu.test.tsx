@@ -135,6 +135,25 @@ describe('toolsBlocker', () => {
     expect(toolsBlocker({ ...HEALTH, checks: HEALTH.checks.map(unavailableIf('gh')) })).toBeNull()
   })
 
+  /** Spec 2026-08-10-forge-provider-adapters, Step 4.3: a `glab` health check joins `checks[]`
+   *  the same way `gh` did — it never picks a runner, so it must never move the aggregate dot,
+   *  only ever show up as an optional row/tooltip entry like `gh` and `codex` already do. */
+  it('never blocks the aggregate dot when the optional glab CLI is missing', () => {
+    const health: HealthResponse = {
+      ...HEALTH,
+      checks: [
+        ...HEALTH.checks,
+        {
+          name: 'glab',
+          available: false,
+          hint: 'optional: install the GitLab CLI and run `glab auth login` (only needed for GitLab projects)',
+        },
+      ],
+    }
+    expect(toolsBlocker(health)).toBeNull()
+    expect(toolsTooltip(health)).toBe('cezar v0.1.3 · optional: codex, glab not installed')
+  })
+
   it('stays quiet when an older server never probed the default runner', () => {
     expect(toolsBlocker({ ...HEALTH, defaultRunner: 'opencode' })).toBeNull()
   })
@@ -185,6 +204,31 @@ describe('ToolsMenu', () => {
     expect(within(menu).getByText('Installed tools')).toBeTruthy()
     // Exactly the four probed tools: the mockup's illustrative `mcp` row must NOT appear.
     expect(rowsIn(menu).map((row) => row.dataset.tool)).toEqual(['claude', 'gh', 'git', 'codex'])
+  })
+
+  it('renders a missing glab check as an ordinary row — never a runner, never a blocker', async () => {
+    const health: HealthResponse = {
+      ...HEALTH,
+      checks: [
+        ...HEALTH.checks,
+        {
+          name: 'glab',
+          available: false,
+          hint: 'optional: install the GitLab CLI and run `glab auth login` (only needed for GitLab projects)',
+        },
+      ],
+    }
+    renderMenu(health)
+    const menu = await openMenu()
+
+    expect(rowsIn(menu).map((row) => row.dataset.tool)).toEqual(['claude', 'gh', 'git', 'codex', 'glab'])
+    const row = rowsIn(menu).find((el) => el.dataset.tool === 'glab') as HTMLElement
+    expect(row.dataset.available).toBe('false')
+    expect(row.querySelector('[data-slot="tool-hint"]')?.textContent).toBe(
+      'optional: install the GitLab CLI and run `glab auth login` (only needed for GitLab projects)'
+    )
+    // Missing glab is a choice not taken (like `gh`), never a reason to blocker the aggregate dot.
+    expect(triggerDot().getAttribute('data-tone')).toBe('success')
   })
 
   it('renders an available tool as dot + mono name + version, not a link', async () => {

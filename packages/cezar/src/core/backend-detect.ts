@@ -13,9 +13,12 @@ export interface BackendCheck {
 /**
  * Probe the host for everything cez leans on: the agent CLIs (`claude`, and
  * the optional `codex` / `opencode` / `pi` alternatives), `gh` (GitHub auth for
- * PR creation) and `git`. Nothing is required except at least one agent CLI —
- * the GUI degrades gracefully, only offers the runners that are present, and
- * shows the hints for the rest.
+ * PR creation), `glab` (GitLab auth for merge-request creation — spec
+ * 2026-08-10-forge-provider-adapters) and `git`. Nothing is required except at
+ * least one agent CLI — the GUI degrades gracefully, only offers the runners
+ * that are present, and shows the hints for the rest. `glab` in particular is
+ * optional in every sense: a GitHub-only project never needs it, so its
+ * absence is never an error and never fails boot (AGENTS.md "Zero config").
  */
 export async function detectEnvironment(): Promise<BackendCheck[]> {
   return Promise.all([
@@ -24,6 +27,7 @@ export async function detectEnvironment(): Promise<BackendCheck[]> {
     probeOpencode(),
     probePi(),
     probeGh(),
+    probeGlab(),
     probeGit(),
   ]);
 }
@@ -136,6 +140,27 @@ async function probeGh(): Promise<BackendCheck> {
       name: 'gh',
       available: false,
       hint: 'install the GitHub CLI and run `gh auth login` (only needed for PR creation)',
+    };
+  }
+}
+
+/**
+ * `glab auth status` is the GitLab equivalent of `probeGh`'s `gh auth token`:
+ * it exits 0 when logged in to at least one host, and non-zero — printing to
+ * stderr — when logged out (spec 2026-08-10-forge-provider-adapters, D6).
+ * ENOENT (glab not installed) lands in the same `catch`, exactly like every
+ * other optional CLI here: no distinction is drawn between "not installed"
+ * and "not authenticated", matching `probeGh`.
+ */
+async function probeGlab(): Promise<BackendCheck> {
+  try {
+    await exec('glab', ['auth', 'status'], { timeout: 10_000 });
+    return { name: 'glab', available: true, version: 'authenticated' };
+  } catch {
+    return {
+      name: 'glab',
+      available: false,
+      hint: 'optional: install the GitLab CLI and run `glab auth login` (only needed for GitLab projects)',
     };
   }
 }

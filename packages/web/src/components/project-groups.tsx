@@ -605,7 +605,13 @@ function ProjectGroup({
 
           {/* This group's own project, explicitly: a collapsed sidebar can show six projects at
               once, and #42 means a different pull request in each of them. */}
-          <ReferenceStatusProvider projectId={project.id} requests={referenceRequests}>
+          <ReferenceStatusProvider
+            projectId={project.id}
+            // Its own forge too, for the same reason (Step 5.10): a sidebar showing a GitHub and
+            // a GitLab project must not tell both chips that GitHub is unreachable.
+            forge={project.forge}
+            requests={referenceRequests}
+          >
             <QuickListBuckets
               buckets={buckets}
               currentRunId={active ? currentRunId : null}

@@ -7,6 +7,7 @@ import { AppShell, type RepoChip } from '@/components/app-shell'
 import { CommandPalette } from '@/components/command-palette'
 import { ListViewProvider } from '@/components/list-view'
 import { ProviderBannerContainer } from '@/components/provider-banner-container'
+import { ReferenceForgeScope } from '@/components/reference-status'
 import { ProjectGroups } from '@/components/project-groups'
 import { TaskQuickListContainer } from '@/components/task-quick-list'
 import { ToolsMenu } from '@/components/tools-menu'
@@ -151,45 +152,52 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
   const toolsMenu = useMemo(() => <ToolsMenu health={health.data} />, [health.data])
 
   return (
-    // The Active/Archived filter is shared by the quick-list below and the Tasks table (Step 3.4),
-    // which renders in `children`. The provider goes here because this is the lowest node that has
-    // both of them under it — the spec requires the two sets of tabs to be one filter.
-    <ListViewProvider>
-      <AppShell
-        repo={repo}
-        version={health.data?.version ?? null}
-        latestVersion={health.data?.latestVersion ?? null}
-        // `?? null` rather than `?? 0`: no badge while the inbox is unknown, and no badge when it
-        // is known to be empty — AppShell renders neither for a falsy count.
-        inboxCount={todos.data?.length ?? null}
-        // Same `?? null` honesty: no badge while the list is unknown; a loaded list with none
-        // unread is 0, which AppShell also renders as no badge.
-        unreadCount={runs.data ?? null}
-        skillsUpdateAvailable={skillsUpdateAvailable}
-        // Hidden until health confirms the forge driver (R6 Step 1.1) — same honesty rule as
-        // the chips: the nav must not claim a GitHub tab it cannot back. The Tools menu's
-        // forge note says why it is absent.
-        forgeAvailable={health.data?.forge?.available === true}
-        // Same source as the title above — the boot folder's health-level answer (Step 3.8).
-        forgeKind={forgeKind}
-        // Hidden unless health reports the opt-in inbox (#471) — same honesty rule as above:
-        // the nav must not offer an Inbox this server will never fill.
-        inboxAvailable={inboxAvailable}
-        // Hidden unless health reports the opt-in automations capability (#801).
-        automationsAvailable={automationsAvailable}
-        banner={banner}
-        singleProject={health.data?.capabilities.singleProject === true}
-        taskQuickList={taskQuickList}
-        // Present only in a multi-project workspace; `AppShell` renders the flat nav and the
-        // quick-list above whenever this slot is absent.
-        projectGroups={projectGroups}
-        toolsMenu={toolsMenu}
-      >
-        {children}
-      </AppShell>
-      {/* Global chrome, not a route: ⌘K must work on every URL. Mounted here (not in AppShell)
-          because it needs the query client and router this container already assumes. */}
-      <CommandPalette />
-    </ListViewProvider>
+    // The viewed project's forge, for every reference chip under the shell (Step 5.10). Here
+    // because this node already reads `useForgeKind()` for the title above and has both the
+    // sidebar and the routed views under it — a routed view subscribing to the registry on its
+    // own destabilizes the scope resolution the router does above it (`ForgeScopeContext`).
+    <ReferenceForgeScope forge={forgeKind}>
+      {/* The Active/Archived filter is shared by the quick-list below and the Tasks table
+          (Step 3.4), which renders in `children`. The provider goes here because this is the
+          lowest node that has both of them under it — the spec requires the two sets of tabs to
+          be one filter. */}
+      <ListViewProvider>
+        <AppShell
+          repo={repo}
+          version={health.data?.version ?? null}
+          latestVersion={health.data?.latestVersion ?? null}
+          // `?? null` rather than `?? 0`: no badge while the inbox is unknown, and no badge when it
+          // is known to be empty — AppShell renders neither for a falsy count.
+          inboxCount={todos.data?.length ?? null}
+          // Same `?? null` honesty: no badge while the list is unknown; a loaded list with none
+          // unread is 0, which AppShell also renders as no badge.
+          unreadCount={runs.data ?? null}
+          skillsUpdateAvailable={skillsUpdateAvailable}
+          // Hidden until health confirms the forge driver (R6 Step 1.1) — same honesty rule as
+          // the chips: the nav must not claim a GitHub tab it cannot back. The Tools menu's
+          // forge note says why it is absent.
+          forgeAvailable={health.data?.forge?.available === true}
+          // Same source as the title above — the boot folder's health-level answer (Step 3.8).
+          forgeKind={forgeKind}
+          // Hidden unless health reports the opt-in inbox (#471) — same honesty rule as above:
+          // the nav must not offer an Inbox this server will never fill.
+          inboxAvailable={inboxAvailable}
+          // Hidden unless health reports the opt-in automations capability (#801).
+          automationsAvailable={automationsAvailable}
+          banner={banner}
+          singleProject={health.data?.capabilities.singleProject === true}
+          taskQuickList={taskQuickList}
+          // Present only in a multi-project workspace; `AppShell` renders the flat nav and the
+          // quick-list above whenever this slot is absent.
+          projectGroups={projectGroups}
+          toolsMenu={toolsMenu}
+        >
+          {children}
+        </AppShell>
+        {/* Global chrome, not a route: ⌘K must work on every URL. Mounted here (not in AppShell)
+            because it needs the query client and router this container already assumes. */}
+        <CommandPalette />
+      </ListViewProvider>
+    </ReferenceForgeScope>
   )
 })

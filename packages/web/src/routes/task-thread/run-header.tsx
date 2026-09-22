@@ -825,8 +825,10 @@ function MetaRow({
     )
   }
 
+  // `forge` on the provider: this page stands in ONE project, so every chip inside it names that
+  // project's forge in its tooltip rather than GitHub (Step 5.10).
   return (
-    <ReferenceStatusProvider projectId={projectId} requests={referenceRequests}>
+    <ReferenceStatusProvider projectId={projectId} forge={forgeKind} requests={referenceRequests}>
       <div
         data-slot="run-meta"
         className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground md:mt-1.5 md:gap-y-1"

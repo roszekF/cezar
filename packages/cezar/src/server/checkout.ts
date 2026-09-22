@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { lstat, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { GLAB_NOT_FOUND_REASON } from './forge/gitlab.ts';
 import { forgeKindOfHost, parseRemote } from './forge/index.ts';
 
 /**
@@ -519,8 +520,10 @@ export async function checkoutRepo(opts: CheckoutOptions): Promise<CheckoutResul
     // directory that is still on disk (it would get the 409 instead).
     await cleanupCheckout(root, target);
     if (outcome.notFound) {
+      // The GitLab wording is the driver's own constant, not a copy: one string, so a reason the
+      // cockpit matches on cannot drift between the checkout flow and every other GitLab route.
       const reason = ref.kind === 'gitlab'
-        ? 'glab CLI not found — install the GitLab CLI and run `glab auth login`'
+        ? GLAB_NOT_FOUND_REASON
         : 'gh CLI not found — install it and run `gh auth login`';
       emit({ phase: 'error', error: reason });
       return { ok: false, status: 503, error: reason, reason };

@@ -62,7 +62,7 @@
 | 5 | 5.3 | Share one budget across the glab probe reads | dispatch:cheap | done | pending |
 | 5 | 5.4 | Count GitLab diff lines without dropping content | dispatch:cheap | done | pending |
 | 5 | 5.5 | Read every auth-status host line in discovery | dispatch | done | pending |
-| 5 | 5.6 | Drop the non-null assertions in the GitLab adapter | dispatch:cheap | todo | — |
+| 5 | 5.6 | Drop the non-null assertions in the GitLab adapter | dispatch:cheap | done | pending |
 | 5 | 5.7 | Match http GitLab hosts in the bookmarklet | dispatch | todo | — |
 | 5 | 5.8 | Seed gitlab.com only for a registered GitLab project | dispatch | todo | — |
 | 5 | 5.9 | Make the foreign-reference guard host-aware | dispatch:capable | todo | — |

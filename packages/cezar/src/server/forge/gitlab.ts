@@ -694,7 +694,11 @@ async function mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) =>
     for (;;) {
       const index = next++;
       if (index >= items.length) return;
-      await fn(items[index]!);
+      const item = items[index];
+      // In range by the line above; the check is how the checker sees that, and it also covers a
+      // `T` that genuinely holds `undefined` (this path's `T` is `number`).
+      if (item === undefined) continue;
+      await fn(item);
     }
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
@@ -765,8 +769,11 @@ async function fetchGitlabChecks(repoRoot: string, numbers: number[]): Promise<F
   const remaining = (): number => deadline - Date.now();
 
   const [first, ...rest] = misses;
+  // `misses` is non-empty (checked above), so this is the checker's view of the destructuring
+  // rather than a case that can happen — and an empty miss list means the cached glyphs stand.
+  if (first === undefined) return { available: true, checks };
   try {
-    remember(first!, pipelineGlyph((await fetchGitlabMrDetail(repoRoot, first!, Math.min(MR_DETAIL_TIMEOUT_MS, remaining()))).head_pipeline?.status));
+    remember(first, pipelineGlyph((await fetchGitlabMrDetail(repoRoot, first, Math.min(MR_DETAIL_TIMEOUT_MS, remaining()))).head_pipeline?.status));
   } catch (err) {
     return { available: false, reason: isNotFound(err) ? GLAB_NOT_FOUND_REASON : glabFailureReason(err) };
   }
@@ -963,19 +970,20 @@ async function fetchGitlabPrDiff(repoRoot: string, number: number, refresh = fal
     return { available: false, reason: isNotFound(err) ? GLAB_NOT_FOUND_REASON : glabFailureReason(err) };
   }
 
-  const counts = rows.map((row) => countDiffLines(row.diff));
-  const totalAdditions = counts.reduce((sum, c) => sum + c.additions, 0);
-  const totalDeletions = counts.reduce((sum, c) => sum + c.deletions, 0);
+  // Counted once, carried with the row: the file cap below slices this list, so pairing by index
+  // afterwards would only be a lookup the checker cannot see is in range.
+  const counted = rows.map((row) => ({ row, ...countDiffLines(row.diff) }));
+  const totalAdditions = counted.reduce((sum, c) => sum + c.additions, 0);
+  const totalDeletions = counted.reduce((sum, c) => sum + c.deletions, 0);
 
-  const limited = rows.slice(0, FORGE_PR_DIFF_FILE_CAP);
+  const limited = counted.slice(0, FORGE_PR_DIFF_FILE_CAP);
   const fileCapped = rows.length >= FORGE_PR_DIFF_FILE_CAP;
   let responseTruncated = fileCapped || (stoppedShort && !fileCapped);
   const reasons: string[] = [];
   if (fileCapped) reasons.push(`Only the first ${FORGE_PR_DIFF_FILE_CAP} files are shown.`);
   else if (stoppedShort) reasons.push('Only some files could be fetched before the time budget ran out.');
 
-  const files: ForgePrChange[] = limited.map((row, i) => {
-    const { additions, deletions } = counts[i]!;
+  const files: ForgePrChange[] = limited.map(({ row, additions, deletions }) => {
     const status = diffStatus(row);
     let patch: string | undefined = row.diff.length > 0 ? row.diff : undefined;
     let truncated = false;

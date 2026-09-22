@@ -399,15 +399,20 @@ const CREATED_PR_RE =
  *  this many distinct PRs the conversation is a survey, not a subject. */
 const MAX_PR_CANDIDATES = 8;
 
-/** The repository a project IS, as `resolveRepoHandle` reports it. `null`/absent means "unknown",
- *  which is a real and common state (no `gh`, no remote, a non-git root) — never an error. */
+/** The repository a project IS, as `armRepoHandle` resolves it — `gh repo view` on GitHub, the
+ *  parsed remote on GitLab. `null`/absent means "unknown", which is a real and common state (no
+ *  `gh`, no remote, a non-git root) — never an error.
+ *
+ *  A GitLab project's identity is its whole path, so its handle is that path split at the last
+ *  separator: `group/sub/proj` arms `{owner: 'group/sub', name: 'proj'}`, which the comparison
+ *  below rejoins. The two halves are never read apart, only joined. */
 export type RepoHandle = { owner: string; name: string };
 
 /** `https://github.com/open-mercato/cezar/pull/402` → `open-mercato/cezar`, lowercased.
  *  Undefined for anything that is not a `<host>/<owner>/<repo>/<kind>/<n>` forge URL.
  *  A GitLab URL yields its whole project path — `https://gitlab.example.com/group/sub/proj/-/
- *  merge_requests/4` → `group/sub/proj` — which is what a `{owner: 'group/sub', name: 'proj'}`
- *  handle joins to, and what a prompt that pastes the URL contains. */
+ *  merge_requests/4` → `group/sub/proj` — which is exactly what that project's own handle joins
+ *  to, and what a prompt that pastes the URL contains. */
 function refUrlRepo(url: string): string | undefined {
   const gitlab = GITLAB_REF_URL_RE.exec(url);
   if (gitlab?.[1]) return gitlab[1].toLowerCase();

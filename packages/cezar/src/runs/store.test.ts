@@ -2119,6 +2119,32 @@ describe('RunStore — GitLab URL shapes (spec 2026-08-10-forge-provider-adapter
       ]);
     });
 
+    // Step 4.4-review-fix-2: on-prem, where the handle now comes from the remote itself
+    // (`armRepoHandle`) — the guard has to hold there too, not just on gitlab.com.
+    it('adopts the project’s own MR on a self-managed host', () => {
+      const { store, run } = freshRun('assessing safety', { owner: 'group', name: 'repo' });
+      store.appendEvent(run.id, {
+        type: 'result',
+        result: 'Ours: http://gitlab.acme.internal:8929/group/repo/-/merge_requests/12.',
+      });
+      expect(store.getRun(run.id)?.referencedPullRequestUrl).toBe(
+        'http://gitlab.acme.internal:8929/group/repo/-/merge_requests/12',
+      );
+    });
+
+    it('drops a foreign MR on that same self-managed host', () => {
+      const { store, run } = freshRun('assessing safety', { owner: 'group', name: 'repo' });
+      store.appendEvent(run.id, {
+        type: 'result',
+        result: 'Theirs: http://gitlab.acme.internal:8929/other/repo/-/merge_requests/99.',
+      });
+      const loaded = store.getRun(run.id);
+      expect(loaded?.referencedPullRequestUrl).toBeUndefined();
+      expect(loaded?.referencedPrCandidates).toEqual([
+        'http://gitlab.acme.internal:8929/other/repo/-/merge_requests/99',
+      ]);
+    });
+
     it('keeps a foreign MR the prompt pastes — the cross-repo case', () => {
       const url = 'https://gitlab.example.com/group/other/-/merge_requests/9';
       const { store, run } = freshRun(`review ${url}`, { owner: 'open-mercato', name: 'cezar' });

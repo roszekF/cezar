@@ -45,6 +45,7 @@
 | 1 | 1.8-review-fix | Keep the pre-seam draft-PR path when no forge resolves | inline | done | 7ec3ab5f |
 | 3 | 3.2-review-fix | Freeze the clock in the GitLab dry-run list test | inline | done | 927f232b |
 | 3 | 3.8-review-fix | Finish forge-aware copy across the forge tab | dispatch | done | pending |
+| 3 | 3.1-review-fix | Name GitLab in the merge-state fallback | inline | done | pending |
 
 ## Goal
 
@@ -176,6 +177,9 @@ All GitLab calls run `glab` with `cwd = repoRoot` through `forge/cli.ts`; `glab 
 #### 3.1 GitLab driver skeleton with detect and registration
 - `forge/gitlab.ts` `createGitlabDriver(repoRoot, parsed)`; `detect()` via `glab repo view --output json` (auth + existence in one call) through the shared SWR cache; caches the project `web_url` and `path_with_namespace` per root; ENOENT → ``glab CLI not found — install the GitLab CLI and run `glab auth login` ``; auth failure → `glab`'s own first line. `resolveForge` returns it for `gitlab` hosts. `evictForgeProjectCaches` covers its caches.
 - Tests: `forge/gitlab.test.ts` — available, not installed, not authenticated, dry-run; `health-forge.test.ts` case where a GitLab remote reports `forge.kind: 'gitlab'`.
+
+#### 3.1-review-fix Name GitLab in the merge-state fallback
+- Found by the checkpoint-5 browser pass: with a GitLab driver registered (3.1), an MR's merge box rendered "GitHub merge state is unavailable". The merge-state/merge fallbacks now say "Merging from cezar is not supported for GitLab merge requests" for a GitLab driver; GitHub and no-forge keep the original text.
 
 #### 3.2 GitLab listIssues and listPRs
 - `glab issue list --output json --per-page N`, `glab mr list --output json --per-page N`; map to `ForgeItem` (`iid` → `number`, `web_url`, `author.username`, `labels`, `description` capped like GitHub, `user_notes_count`, `draft || work_in_progress` → `isDraft`, `checks: null` per D5). Label colors from `glab api projects/:fullpath/labels`, best-effort. Implement `listAll` too if 1.4 introduced it.

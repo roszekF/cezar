@@ -5382,7 +5382,9 @@ export function createApp(deps: ServerDeps) {
         const { root: repoRoot } = c.get('project');
         const parsed = { data: c.req.valid('param') };
         const forge = resolveForge(await getRepoInfo(repoRoot));
-        if (!forge?.prMergeState) return c.json({ available: false, reason: 'GitHub merge state is unavailable' });
+        // A GitLab driver has no merge support (spec 2026-08-10-forge-provider-adapters, Non-goals):
+        // name the forge the project is actually on; GitHub and no-forge keep the original text.
+        if (!forge?.prMergeState) return c.json({ available: false, reason: forge?.kind === 'gitlab' ? 'Merging from cezar is not supported for GitLab merge requests' : 'GitHub merge state is unavailable' });
         return c.json(await forge.prMergeState(parsed.data.number, { refresh: c.req.valid('query').refresh === '1' }));
       },
     )
@@ -5396,7 +5398,7 @@ export function createApp(deps: ServerDeps) {
         const parsedNumber = { data: c.req.valid('param') };
         const body = { data: c.req.valid('json') };
         const forge = resolveForge(await getRepoInfo(repoRoot));
-        if (!forge?.mergePR) return c.json({ error: 'GitHub merge is unavailable' }, 409);
+        if (!forge?.mergePR) return c.json({ error: forge?.kind === 'gitlab' ? 'Merging from cezar is not supported for GitLab merge requests' : 'GitHub merge is unavailable' }, 409);
         const result = await forge.mergePR(parsedNumber.data.number, body.data);
         if (result.merged) {
           // We just changed this pull request, so what the ref-status cache holds about it is now

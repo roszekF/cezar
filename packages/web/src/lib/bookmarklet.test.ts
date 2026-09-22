@@ -155,6 +155,39 @@ describe('bookmarkletUrl GitLab matcher (spec 2026-08-10-forge-provider-adapters
     expect(matcher.test('https://github.com/open-mercato/cezar/pull/1')).toBe(true)
   })
 
+  // Step 5.7: `gitlabHostsFromProjects` harvests `new URL(repoUrl).host`, and `repoUrl` keeps the
+  // remote's own scheme and port for a self-managed instance (Decision D3) — so an on-prem
+  // `http://gitlab.acme.internal:8929` project's host was collected but could never match a
+  // matcher pinned to `https:`.
+  it('matches an http on-prem GitLab host on its own port', () => {
+    const code = program(
+      bookmarkletUrl('', false, 'k', 'http://localhost:4321', null, ['gitlab.com', 'gitlab.acme.internal:8929']),
+    )
+    const matcher = new RegExp(
+      code.match(/location\.href\.match\(\/(.+?)\/\);/)?.[1] ?? (() => { throw new Error('no matcher found') })(),
+    )
+    expect(matcher.test('http://gitlab.acme.internal:8929/group/repo/-/merge_requests/7')).toBe(true)
+    expect(matcher.test('http://gitlab.acme.internal:8929/group/sub/repo/-/issues/3')).toBe(true)
+    // The port is part of the host, so the bare hostname is still not a known host.
+    expect(matcher.test('http://gitlab.acme.internal/group/repo/-/merge_requests/7')).toBe(false)
+    // https on the same host keeps working, and so do the https-only hosts.
+    expect(matcher.test('https://gitlab.acme.internal:8929/group/repo/-/merge_requests/7')).toBe(true)
+    expect(matcher.test('https://gitlab.com/group/repo/-/merge_requests/5')).toBe(true)
+    expect(matcher.test('http://gitlab.com/group/repo/-/merge_requests/5')).toBe(true)
+    // An unknown host is still rejected under either scheme.
+    expect(matcher.test('http://gitlab.other.example/group/repo/-/merge_requests/5')).toBe(false)
+  })
+
+  it('leaves the GitHub alternative pinned to https — only the GitLab half accepts http', () => {
+    const code = program(bookmarkletUrl('', false, 'k', 'http://localhost:4321', null, ['gitlab.com']))
+    expect(code).toContain(String.raw`^https:\/\/github\.com\/`)
+    const matcher = new RegExp(
+      code.match(/location\.href\.match\(\/(.+?)\/\);/)?.[1] ?? (() => { throw new Error('no matcher found') })(),
+    )
+    expect(matcher.test('https://github.com/open-mercato/cezar/pull/1')).toBe(true)
+    expect(matcher.test('http://github.com/open-mercato/cezar/pull/1')).toBe(false)
+  })
+
   it('rejects a GitLab-shaped path with only one segment', () => {
     const code = program(bookmarkletUrl('', false, 'k', 'http://localhost:4321', null, ['gitlab.com']))
     const matcher = new RegExp(

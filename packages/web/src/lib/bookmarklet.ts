@@ -44,8 +44,12 @@
  * scoping). An EMPTY list (the default — no caller-known GitLab host) reproduces the pre-GitLab
  * matcher and alert text byte for byte, so every already-saved bookmarklet, and every call site
  * that does not pass hosts, is unaffected. The GitLab URL shape mirrors the server-side one
- * (`runs/store.ts` `GITLAB_PROJECT_URL`, Step 4.4): `https://<host>/<path…>/-/(merge_requests|
- * issues)/N`, path at least two segments so subgroups match. Every regex metacharacter in a host
+ * (`runs/store.ts` `GITLAB_PROJECT_URL`, Step 4.4): `http(s)://<host>/<path…>/-/(merge_requests|
+ * issues)/N`, path at least two segments so subgroups match. The scheme is optional there and
+ * here (Step 5.7): the harvested host keeps whatever scheme and port the project's `repoUrl`
+ * carries (Decision D3), and an on-prem instance is routinely plain `http` on a custom port —
+ * pinned to `https:` such a host could be collected but never matched. Every regex metacharacter
+ * in a host
  * is escaped, so `gitlab.example.com` cannot match `gitlabXexampleXcom` and an IPv6 host
  * (`[2001:db8::1]:8929`) cannot turn into a character class — or, unbalanced, into a `new RegExp`
  * that throws on the page (Step 4.5-review-fix).
@@ -80,12 +84,16 @@ function escapeHostForRegex(host: string): string {
 function buildMatcher(gitlabHosts: readonly string[]): { pattern: string; alert: string } {
   if (gitlabHosts.length === 0) return { pattern: GITHUB_PATTERN, alert: GITHUB_ALERT }
   const hostAlternation = gitlabHosts.map(escapeHostForRegex).join('|')
-  // Same shape as `runs/store.ts`'s server-side `GITLAB_PROJECT_URL` (Step 4.4): everything
-  // before `/-/` is the project path, at least two segments so a subgroup (`group/sub/repo`)
-  // matches too. Unlike the server-side pattern the host is a fixed whitelist here (this code
-  // runs on an arbitrary page, not against a known project's remote), so no host exclusion is
-  // needed.
-  const gitlabPattern = String.raw`^https:\/\/(?:${hostAlternation})\/(?:[^\/]+\/){1,}[^\/]+\/-\/(?:merge_requests|issues)\/\d+`
+  // Same shape as `runs/store.ts`'s server-side `GITLAB_PROJECT_URL` (Step 4.4): the scheme is
+  // `https?`, and everything before `/-/` is the project path, at least two segments so a
+  // subgroup (`group/sub/repo`) matches too. Unlike the server-side pattern the host is a fixed
+  // whitelist here (this code runs on an arbitrary page, not against a known project's remote),
+  // so no host exclusion is needed.
+  // `http` is accepted (Step 5.7) because the hosts come from `gitlabHostsFromProjects`, which
+  // harvests `new URL(repoUrl).host` — and `repoUrl` preserves the remote's own scheme and port
+  // for a self-managed instance (Decision D3). A host like `gitlab.acme.internal:8929`, served
+  // over plain `http` on the corporate network, was collected and could never match.
+  const gitlabPattern = String.raw`^https?:\/\/(?:${hostAlternation})\/(?:[^\/]+\/){1,}[^\/]+\/-\/(?:merge_requests|issues)\/\d+`
   return { pattern: `${GITHUB_PATTERN}|${gitlabPattern}`, alert: BOTH_FORGES_ALERT }
 }
 

@@ -13,11 +13,11 @@
 
 | Phase | Step | Title | Exec | Status | Commit |
 |-------|------|-------|------|--------|--------|
-| 1 | 1.1 | Widen ForgeKind and add optional driver capabilities | dispatch | done | pending |
-| 1 | 1.2 | Widen the contract schemas and their narrowing consumers | dispatch | done | pending |
-| 1 | 1.3 | Extract forge/cli.ts shared adapter plumbing | dispatch:capable | done | pending |
-| 1 | 1.4 | Route GET /github and /github/search through the driver | dispatch:capable | done | pending |
-| 1 | 1.5 | Route GET /github/comments through forge.listComments | dispatch | done | pending |
+| 1 | 1.1 | Widen ForgeKind and add optional driver capabilities | dispatch | done | 5c03e161 |
+| 1 | 1.2 | Widen the contract schemas and their narrowing consumers | dispatch | done | d72ef57d |
+| 1 | 1.3 | Extract forge/cli.ts shared adapter plumbing | dispatch:capable | done | a45d4b4e |
+| 1 | 1.4 | Route GET /github and /github/search through the driver | dispatch:capable | done | d078b602 |
+| 1 | 1.5 | Route GET /github/comments through forge.listComments | dispatch | done | a05ebeda |
 | 1 | 1.6 | Route GET /github/checks through forge.listChecks | dispatch | todo | — |
 | 1 | 1.7 | Route GET /github/ref-status through forge.refStatus | dispatch | todo | — |
 | 1 | 1.8 | Route PR changes and draft-PR creation through the driver | dispatch | todo | — |

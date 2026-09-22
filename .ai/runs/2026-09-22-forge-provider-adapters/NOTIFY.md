@@ -15,3 +15,9 @@
 
 ## 2026-09-22T13:09:10Z — baseline
 - npm run typecheck green on 4763447f. npm test: 1 failure (automations/store.test.ts lease age-rule case) under full-suite load; passes alone — pre-existing flake.
+
+## 2026-09-22T13:34:06Z — checkpoint 1 (steps 1.1..1.5)
+- typecheck, npm test (7 324), test:unit (36) green. UI e2e deferred to checkpoint 2 (only gitlab-only nav gating changed).
+- Decision: Tasks-table SHAs are backfilled at checkpoints (a commit cannot record its own SHA).
+- Decision (1.4): null/unknown-forge list/search/comments answer 'No supported forge remote detected' in-payload; see checkpoint-1-checks.md.
+- Delegations: 1.1, 1.2 executors (inherited model); 1.3, 1.4 at tier capable (opus); 1.5 at tier standard (sonnet).

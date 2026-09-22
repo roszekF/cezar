@@ -21,7 +21,7 @@
 | 1 | 1.6 | Route GET /github/checks through forge.listChecks | dispatch | done | 336d55bb |
 | 1 | 1.7 | Route GET /github/ref-status through forge.refStatus | dispatch | done | ea6aada9 |
 | 1 | 1.8 | Route PR changes and draft-PR creation through the driver | dispatch | done | 81a4912b |
-| 2 | 2.1 | Add forge/discovery.ts with the host ladder and cache | dispatch | todo | — |
+| 2 | 2.1 | Add forge/discovery.ts with the host ladder and cache | dispatch | done | pending |
 | 2 | 2.2 | Wire discovery into forge/index.ts and the boot warm-up | dispatch:capable | todo | — |
 | 2 | 2.3 | Carry path and web origin on ParsedRemote | dispatch | todo | — |
 | 2 | 2.4 | Build the GitHub viewUrl from the parsed origin | dispatch:cheap | todo | — |

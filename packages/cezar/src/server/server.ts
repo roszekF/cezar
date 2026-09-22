@@ -192,6 +192,7 @@ import {
   listForgeChecks,
   listForgeComments,
   listForgeItems,
+  loadForgeDiscoveryCache,
   parseRemote,
   refreshForgeDiscovery,
   resolveForge,
@@ -1764,7 +1765,16 @@ export function createApp(deps: ServerDeps) {
   // which hosts they are signed into so an on-prem forge classifies without config. Same gate,
   // same fire-and-forget: until it lands the host ladder answers from the well-known hosts and the
   // cache file, which is exactly what every reader already handles. `startServer` keeps it fresh.
-  if (deps.socketHub) void refreshForgeDiscovery();
+  //
+  // The cache file itself is read EAGERLY and synchronously first (Step 2.2's review fix): it is
+  // what the host ladder answers from until the probes land, and its lazy load would otherwise
+  // happen inside the first request that classifies a host (`/api/v1/projects` → per-project
+  // probe), putting a `readFileSync` on the event loop and leaving a GitHub Enterprise project's
+  // `/github*` routes unavailable until then.
+  if (deps.socketHub) {
+    loadForgeDiscoveryCache();
+    void refreshForgeDiscovery();
+  }
 
   // ---- chained family: host model catalog (workspace-level) ----
   const modelsRoutes = new Hono<ProjectApiEnv>()

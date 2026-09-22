@@ -327,12 +327,15 @@ added, renamed or removed.
 - **Capability degradation, not new errors:** a GitLab project answers the in-payload
   `{available: false, reason}` for reference statuses and merge state/merge, because the GitLab
   driver deliberately implements neither (chips render neutral, the merge panel reads unavailable).
-- **Automations stay GitHub-only and stay where they were.** `GET /api/v1/automations` reports
+- **Automations stay github.com-only and stay where they were.** `GET /api/v1/automations` reports
   `available: false` with the reason `GitHub automations need a GitHub remote` for a non-GitHub
   forge (the no-remote case keeps `No GitHub remote is configured`), and a GitHub-event poller is
-  never armed for such a project. No route, status code, schema, gate or nav item changed, and
-  schedule automations are unaffected — a GitLab project behaves exactly like a repo with no
-  GitHub remote did before.
+  never armed for such a project. A GitHub **Enterprise** remote is refused too, with its own
+  reason `GitHub automations need a github.com remote`: the poller passes no `--hostname` to `gh`
+  and matches candidates against the literal `https://api.github.com/repos/<owner>/<repo>`, so it
+  can only ever read github.com — unchanged from before this branch, which gated on the literal
+  host. No route, status code, schema, gate or nav item changed, and schedule automations are
+  unaffected — a GitLab project behaves exactly like a repo with no GitHub remote did before.
 - **`POST /api/v1/projects/checkout`** additionally accepts GitLab URLs (https/ssh/scp, subgroups)
   on discovered GitLab hosts; `owner/repo` and every GitHub spelling behave exactly as before. Two
   text changes, no shape change: the rejection now reads `not a git forge repository: …` (400) and a
@@ -343,7 +346,18 @@ added, renamed or removed.
   recognize `…/-/merge_requests/N` and `…/-/issues/N` URLs and `glab mr create` output; every
   GitHub pattern is unchanged, and no persisted field changed shape or requiredness (§3, §8).
 - **New disposable state:** `~/.cache/cez/forge-hosts.json` (the discovery cache). Deleting it costs
-  one re-probe; a read-only or missing cache directory degrades silently (§ Zero config).
+  one re-probe; a read-only or missing cache directory degrades silently (§ Zero config). The server
+  reads it eagerly at boot, so a host any previous run discovered classifies from the very first
+  request.
+- **First-probe window on a GitHub Enterprise host (a change from the pre-branch behaviour).** A GHE
+  host is not a well-known one: it is classified from what `gh auth status` reports, which the
+  discovery probe writes to the cache above. On a machine that has never discovered that host — the
+  first run after install, or after the cache is deleted — its `/api/v1/github*` routes answer the
+  in-payload `{available: false, reason: "No supported forge remote detected"}` until the first
+  probe lands (a few seconds after boot; retried on an interval, and the routes then serve live data
+  with no restart). Before this branch those routes shelled `gh` directly and answered immediately.
+  No route, status code or payload SHAPE changed — this is the same unavailable payload every forge
+  read already degrades to, and the cockpit renders it as it always has.
 - **Rollback:** remove the GitLab row from the well-known host table and the adapter registration;
   discovery then classifies every GitLab host as `null` and those repos are plain-git again. Nothing
   was written to the forge and no state needs unwinding.

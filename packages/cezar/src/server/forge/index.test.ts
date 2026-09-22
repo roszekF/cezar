@@ -17,6 +17,7 @@ import {
   listForgeChecks,
   listForgeComments,
   listForgeItems,
+  loadForgeDiscoveryCache,
   NO_FORGE_REASON,
   parseRemote,
   resolveForge,
@@ -265,6 +266,46 @@ describe('forge discovery in the host ladder', () => {
             : { stdout: '', stderr: '', notFound: true },
       });
       expect(forgeKindOfHost('github.acme.internal')).toBe('github');
+    });
+
+    // Step 2.2's review fix: the lazy load's first caller is in practice INSIDE a request
+    // (`/api/v1/projects` → per-project probe → `forgeKindOfRemote`), so `createApp` reads the
+    // cache eagerly at boot instead. The lazy path stays as the fallback.
+    it('loads the cache eagerly, before anything classifies a host', () => {
+      const file = join(dir, 'forge-hosts.json');
+      writeCache(file, { 'ghe.acme.corp': 'github' });
+      __setForgeHostCacheFileForTests(file);
+
+      loadForgeDiscoveryCache();
+      expect(vi.mocked(fs.readFileSync).mock.calls.filter(([p]) => p === file)).toHaveLength(1);
+
+      // Already in memory: classifying reads nothing more, and the answer survives the file going
+      // away — which is what proves the read happened at load time, not on first use.
+      vi.mocked(fs.readFileSync).mockClear();
+      rmSync(file, { force: true });
+      expect(forgeKindOfRemote('git@ghe.acme.corp:acme/widgets.git')).toBe('github');
+      expect(fs.readFileSync).not.toHaveBeenCalled();
+    });
+
+    it('is idempotent — a second call re-reads nothing', () => {
+      const file = join(dir, 'forge-hosts.json');
+      writeCache(file, { 'gitlab.acme.internal': 'gitlab' });
+      __setForgeHostCacheFileForTests(file);
+      loadForgeDiscoveryCache();
+      vi.mocked(fs.readFileSync).mockClear();
+      loadForgeDiscoveryCache();
+      loadForgeDiscoveryCache();
+      expect(fs.readFileSync).not.toHaveBeenCalled();
+      expect(forgeKindOfHost('gitlab.acme.internal')).toBe('gitlab');
+    });
+
+    it('keeps the lazy fallback for every caller that never loaded eagerly', () => {
+      const file = join(dir, 'forge-hosts.json');
+      writeCache(file, { 'gitlab.acme.internal': 'gitlab' });
+      __setForgeHostCacheFileForTests(file); // resets the map; nothing calls the eager loader
+      expect(fs.readFileSync).not.toHaveBeenCalled();
+      expect(forgeKindOfRemote('git@gitlab.acme.internal:platform/api.git')).toBe('gitlab');
+      expect(vi.mocked(fs.readFileSync).mock.calls.filter(([p]) => p === file)).toHaveLength(1);
     });
 
     it('never warms from a test without an injected runner', async () => {

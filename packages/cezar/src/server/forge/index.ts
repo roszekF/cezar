@@ -133,6 +133,21 @@ export function forgeKindOfHost(host: string): ForgeKind | null {
 }
 
 /**
+ * Read the discovery cache NOW, off the request path, and keep it (spec
+ * 2026-08-10-forge-provider-adapters, Step 2.2). `loadDiscoveredHosts` is otherwise lazy, and in
+ * practice its first caller is INSIDE a request — `/api/v1/projects` → per-project probe →
+ * `forgeKindOfRemote` — so a synchronous `readFileSync` lands on the event loop, and until it does
+ * a GitHub Enterprise project's `/github*` routes answer the in-payload unavailable. `createApp`
+ * calls this once at boot; the lazy path stays as the fallback for everything that does not.
+ *
+ * Idempotent and cheap: a map already in memory (an earlier call, a warm-up, a test seam) is kept,
+ * and under vitest there is no file to read unless a test points at one.
+ */
+export function loadForgeDiscoveryCache(): void {
+  loadDiscoveredHosts();
+}
+
+/**
  * Re-run discovery (the CLI probes) and swap the in-memory map for the merged result. Called at
  * boot and on a bounded interval by the server — never from a request handler. Never throws.
  * Under vitest it is a no-op unless the caller injects a runner, so no test ever spawns `gh`/`glab`

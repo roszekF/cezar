@@ -44,6 +44,7 @@
 | 1 | 1.7-review-fix | Type the driver-stub test payloads explicitly | inline | done | 5f7bae12 |
 | 1 | 1.8-review-fix | Keep the pre-seam draft-PR path when no forge resolves | inline | done | 7ec3ab5f |
 | 3 | 3.2-review-fix | Freeze the clock in the GitLab dry-run list test | inline | done | 927f232b |
+| 3 | 3.8-review-fix | Finish forge-aware copy across the forge tab | dispatch | todo | — |
 
 ## Goal
 
@@ -208,6 +209,9 @@ All GitLab calls run `glab` with `cwd = repoRoot` through `forge/cli.ts`; `glab 
 - Nav item label/icon and route `pageLabel` from `health.forge.kind` (`GitHub`/GitHub icon, `GitLab`/GitLab icon — add a small inline `GitlabIcon` beside `GithubIcon`); `/github` URL and the `forge` gate unchanged.
 - `routes/github/github.tsx` unavailable state: title and hint driven by `forge.kind`/`reason` (no hard-coded `gh auth login` for GitLab); "Open all files on GitHub" and similar copy take the forge name. `lib/git-actions.ts` "no supported forge remote (GitHub) detected" → forge-neutral. `components/tools-menu.tsx` `forgeNote` forge-neutral.
 - Tests: `nav-items` both kinds; `github.test.tsx` renders a GitLab payload and the GitLab unavailable hint; `git-actions.test.ts`, `tools-menu.test.tsx` updated.
+
+#### 3.8-review-fix Finish forge-aware copy across the forge tab
+- Found by the checkpoint-5 browser pass on a dry-run GitLab project: the nav reads "GitLab", but the page header still reads "GitHub", the detail link "open on GitHub", the tab "Pull requests", and ~20 more strings in `routes/github/` (empty states, "Found on GitHub", "Searching GitHub…", loading subtitle, thread/comment/event link labels, checks link) still name GitHub. Every user-visible forge name and PR noun in the tab follows the forge kind; GitHub output byte-identical.
 
 #### 3.9 Forge-neutral task reference chips in the cockpit
 - `web/src/lib/tasks-table.ts`: `githubRepoBase` → `forgeRepoBase(remote, kind?)` mirroring the server parse including the 2.3 subgroup/origin rules (well-known hosts only when no kind is given; any host when the server's `forge` kind says so); `synthesizeUrl`/`taskIssueUrl` emit `/-/merge_requests/N` and `/-/issues/N` for `gitlab`. `api/queries.ts` `useProjectRepoBase` passes the project's forge kind (registry `forge` + `repoUrl` preferred, as today). Document the parser-duplication rule (change both copies in one commit) in both `tasks-table.ts` and `forge/index.ts`.

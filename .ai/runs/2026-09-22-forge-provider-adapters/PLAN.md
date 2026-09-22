@@ -34,10 +34,10 @@
 | 3 | 3.7 | GitLab viewUrl | dispatch:cheap | done | d7db20ab |
 | 3 | 3.8 | Cockpit forge label, icon and copy from health.forge.kind | dispatch | done | 41d044a5 |
 | 3 | 3.9 | Forge-neutral task reference chips in the cockpit | dispatch | done | bd6f6668 |
-| 4 | 4.1 | GitLab draft merge request creation | dispatch:capable | done | pending |
-| 4 | 4.2 | Clone from a GitLab remote | dispatch:capable | done | pending |
-| 4 | 4.3 | Host tooling, agent env and redaction for glab | dispatch | done | pending |
-| 4 | 4.4 | Run bookkeeping learns GitLab URL shapes | dispatch | done | pending |
+| 4 | 4.1 | GitLab draft merge request creation | dispatch:capable | done | 16dc31b7 |
+| 4 | 4.2 | Clone from a GitLab remote | dispatch:capable | done | dbca8223 |
+| 4 | 4.3 | Host tooling, agent env and redaction for glab | dispatch | done | de170f1d |
+| 4 | 4.4 | Run bookkeeping learns GitLab URL shapes | dispatch | done | 2a49957a |
 | 4 | 4.5 | Bookmarklet matcher from discovered hosts | dispatch:cheap | todo | — |
 | 4 | 4.6 | GitHub-event automations require a GitHub forge | dispatch | todo | — |
 | 4 | 4.7 | Documentation for the second forge | inline | todo | — |
@@ -46,7 +46,7 @@
 | 3 | 3.2-review-fix | Freeze the clock in the GitLab dry-run list test | inline | done | 927f232b |
 | 3 | 3.8-review-fix | Finish forge-aware copy across the forge tab | dispatch | done | b195fece |
 | 3 | 3.1-review-fix | Name GitLab in the merge-state fallback | inline | done | b9f7d22b |
-| 4 | 4.2-review-fix | Persist the glab credential helper after a GitLab clone | dispatch | done | pending |
+| 4 | 4.2-review-fix | Persist the glab credential helper after a GitLab clone | dispatch | done | b22c4a50 |
 
 ## Goal
 

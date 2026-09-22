@@ -52,3 +52,9 @@
 - e2e subset: failures match main except harness socket resets, which main reproduces too → pre-existing; closes the checkpoint-2 composer-defaults question.
 - Decision: Step 4.4 also makes the hand-to-agent wording forge-aware ("Fix GitLab issue #N", "Address GitLab merge request !N") with task-refs.ts learning it in the same commit.
 - Delegations: 3.6+3.7 (sonnet), 3.8 (sonnet), 3.9 (sonnet), 3.8-review-fix (sonnet).
+
+## 2026-09-22T17:02:51Z — checkpoint 6 (4.1..4.4 + 4.2-review-fix)
+- typecheck, npm test (7 613), test:unit green; browser pass on the dry-run GitLab project (hand-off wording, merge-box copy, clone dialog).
+- 4.2-review-fix raised by the 4.2 executor (GitLab clone credential helper) and fixed.
+- Tracker-descriptor note: attach-image-evidence's "branch exists?" probe (GET git/refs/heads/<name>) prefix-matches, so on this fork (which inherited qa-evidence-checkpoint-5-pr-521 from upstream) it skipped creating qa-evidence-checkpoint-5; created explicitly with git/ref (singular). Worth fixing in .ai/trackers/github.md upstream.
+- Delegations: 4.1 (opus), 4.2 (opus), 4.2-review-fix (sonnet), 4.3 (sonnet), 4.4 (opus).

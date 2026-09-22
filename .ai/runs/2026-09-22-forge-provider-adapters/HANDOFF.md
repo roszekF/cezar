@@ -1,16 +1,16 @@
 # Handoff — 2026-09-22-forge-provider-adapters
 
-**Last updated:** 2026-09-22T16:25:02Z
+**Last updated:** 2026-09-22T17:02:51Z
 **Branch:** feat/forge-provider-adapters (fork roszekF/cezar)
 **PR:** https://github.com/roszekF/cezar/pull/1 (draft)
-**Current phase/step:** Phase 4 Step 4.1
-**Last commit:** b9f7d22b — fix(forge): name GitLab in the merge-state fallback
+**Current phase/step:** Phase 4 Step 4.5
+**Last commit:** 2a49957a — feat(forge): run bookkeeping and hand-off wording learn GitLab
 
 ## What just happened
-- Phase 3 complete (3.1–3.9 + 3 review-fix rows): GitLab read paths, search, web links, forge-aware cockpit copy, forge-neutral task chips. Checkpoint 5 green with a real-browser pass on a dry-run GitLab project.
+- 4.1–4.4 + 4.2-review-fix landed: GitLab draft MRs, clone from GitLab (+ credential helper), glab host tooling/env/redaction/installer, GitLab URL bookkeeping + hand-off wording. Checkpoint 6 green with a browser pass.
 
 ## Next concrete action
-- Implement Step 4.1 — GitLab draft merge request creation (glab mr create --draft …), mirroring createDraftPr.
+- Implement Step 4.5 — bookmarklet matcher from discovered hosts; then 4.6 automations availability, 4.7 docs, then the final gate.
 
 ## Blockers / open questions
 - none. Pushes go over HTTPS with gh credentials (SSH agent stopped signing): git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push https://github.com/roszekF/cezar.git feat/forge-provider-adapters

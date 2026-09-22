@@ -145,8 +145,14 @@ describe('GET /api/v1/health — forge + capabilities', () => {
     expect(body.forge).toEqual({ kind: 'github', available: true });
   });
 
-  it('reports forge:null for a non-GitHub remote', async () => {
+  it('reports the GitLab forge for a gitlab.com remote (spec 2026-08-10-forge-provider-adapters)', async () => {
     initRepo('git@gitlab.com:acme/demo.git');
+    const body = await health();
+    expect(body.forge).toEqual({ kind: 'gitlab', available: true });
+  });
+
+  it('reports forge:null for a remote on a host no forge claims', async () => {
+    initRepo('git@git.example.com:acme/demo.git');
     const body = await health();
     expect(body.forge).toBeNull();
   });

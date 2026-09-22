@@ -25,7 +25,7 @@
 | 2 | 2.2 | Wire discovery into forge/index.ts and the boot warm-up | dispatch:capable | done | 84ecc7dd |
 | 2 | 2.3 | Carry path and web origin on ParsedRemote | dispatch | done | ce018c43 |
 | 2 | 2.4 | Build the GitHub viewUrl from the parsed origin | dispatch:cheap | done | ec1ee5e8 |
-| 3 | 3.1 | GitLab driver skeleton with detect and registration | dispatch:capable | todo | — |
+| 3 | 3.1 | GitLab driver skeleton with detect and registration | dispatch:capable | done | pending |
 | 3 | 3.2 | GitLab listIssues and listPRs | dispatch | todo | — |
 | 3 | 3.3 | GitLab listComments with timeline events | dispatch | todo | — |
 | 3 | 3.4 | GitLab listChecks and prStatus | dispatch | todo | — |

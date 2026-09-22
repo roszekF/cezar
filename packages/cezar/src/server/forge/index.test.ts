@@ -145,8 +145,9 @@ describe('resolveForge', () => {
     expect(resolveForge(info('git@github.com:acme/demo.git'))?.kind).toBe('github');
   });
 
-  it('returns null for a gitlab.com remote (the GitLab driver lands in Step 3.1)', () => {
-    expect(resolveForge(info('git@gitlab.com:acme/demo.git'))).toBeNull();
+  it('maps a gitlab.com remote to the GitLab driver', () => {
+    expect(resolveForge(info('git@gitlab.com:acme/demo.git'))?.kind).toBe('gitlab');
+    expect(resolveForge(info('https://gitlab.com/group/sub/demo.git'))?.kind).toBe('gitlab');
   });
 
   it('returns null for a self-hosted host', () => {
@@ -174,12 +175,12 @@ describe('forge discovery in the host ladder', () => {
     __setForgeHostCacheFileForTests(null);
   });
 
-  it('classifies an on-prem gitlab host from the discovery map, with a web root but no driver yet', () => {
+  it('builds the GitLab driver for an on-prem gitlab host from the discovery map', () => {
     __setForgeHostsForTests({ 'gitlab.acme.internal': 'gitlab' });
     const remote = 'git@gitlab.acme.internal:platform/api.git';
     expect(forgeKindOfRemote(remote)).toBe('gitlab');
     expect(forgeWebRoot(remote)).toBe('https://gitlab.acme.internal/platform/api');
-    expect(resolveForge(info(remote))).toBeNull();
+    expect(resolveForge(info(remote))?.kind).toBe('gitlab');
   });
 
   it('builds the GitHub driver for a GitHub Enterprise host from the discovery map', () => {
@@ -336,9 +337,9 @@ describe('ForgeDriver optional capabilities', () => {
     expect(minimal.listAll).toBeUndefined();
   });
 
-  it('classifies a gitlab remote but still resolves no driver for it', () => {
+  it('classifies a gitlab remote and resolves the GitLab driver for it', () => {
     expect(forgeKindOfRemote('git@gitlab.com:acme/demo.git')).toBe('gitlab');
-    expect(resolveForge(info('git@gitlab.com:acme/demo.git'))).toBeNull();
+    expect(resolveForge(info('git@gitlab.com:acme/demo.git'))?.kind).toBe('gitlab');
   });
 });
 

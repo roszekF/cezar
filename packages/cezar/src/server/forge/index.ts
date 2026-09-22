@@ -8,6 +8,7 @@ import {
   type WarmForgeDiscoveryOptions,
 } from './discovery.ts';
 import { createGithubDriver } from './github.ts';
+import { createGitlabDriver } from './gitlab.ts';
 import type {
   ForgeChecksData,
   ForgeCommentsData,
@@ -23,9 +24,9 @@ import type {
 /**
  * Forge resolution (cockpit-ui redesign spec §"Forge-driver seam"): map the
  * repo's origin remote to a driver — a host classified `github` (github.com, or
- * a GitHub Enterprise host `gh auth status` reported) → the GitHub driver,
- * anything else (GitLab until its driver lands, unknown hosts, no remote, not a
- * repo) → null. The health route
+ * a GitHub Enterprise host `gh auth status` reported) → the GitHub driver, a
+ * host classified `gitlab` → the GitLab driver, anything else (unknown hosts, no
+ * remote, not a repo) → null. The health route
  * serializes the result as `forge: {kind, available, reason?} | null`; a null
  * forge means plain-git features only (diffs, commit, push, branches).
  */
@@ -185,7 +186,8 @@ export function forgeWebRoot(remote: string | undefined): string | null {
 }
 
 /** Remote host → driver | null. Any `github` host (github.com or a GitHub Enterprise host) gets the
- *  GitHub driver — `gh` itself resolves the host from the repo's remote. */
+ *  GitHub driver — `gh` itself resolves the host from the repo's remote — and any `gitlab` host
+ *  the GitLab driver. */
 export function resolveForge(repoInfo: RepoInfo | null): ForgeDriver | null {
   if (!repoInfo?.remote) return null;
   const parsed = parseRemote(repoInfo.remote);
@@ -194,8 +196,10 @@ export function resolveForge(repoInfo: RepoInfo | null): ForgeDriver | null {
   if (kind === 'github') {
     return createGithubDriver(repoInfo.root, { owner: parsed.owner, repo: parsed.repo, origin: parsed.origin });
   }
-  // `gitlab` hosts resolve no driver until the GitLab adapter lands (spec
-  // 2026-08-10-forge-provider-adapters, Step 3.1); the routes degrade in-payload meanwhile.
+  // A `gitlab` host (gitlab.com or a discovered self-managed instance) gets the GitLab driver —
+  // `glab` likewise resolves the host and project from the repo's remote (spec
+  // 2026-08-10-forge-provider-adapters, Step 3.1).
+  if (kind === 'gitlab') return createGitlabDriver(repoInfo.root, parsed);
   return null;
 }
 

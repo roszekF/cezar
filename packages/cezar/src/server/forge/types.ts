@@ -9,7 +9,7 @@ import type { RunRecord } from '../../runs/store.ts';
  * driver file behind `resolveForge`, no route or UI changes.
  */
 
-/** `gitlab` is additive (spec 2026-08-10-forge-provider-adapters); no driver resolves to it yet. */
+/** `gitlab` is additive (spec 2026-08-10-forge-provider-adapters); `forge/gitlab.ts` implements it. */
 export type ForgeKind = 'github' | 'gitlab';
 
 /** Availability probe result — mirrors the tab's quiet degradation contract:

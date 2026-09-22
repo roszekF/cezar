@@ -84,4 +84,12 @@ describe('the github list API', () => {
       prs: [],
     });
   });
+
+  it('lists through listIssues + listPRs for a GitLab remote (skeleton driver, Step 3.1)', async () => {
+    // The GitLab driver has no `listAll` yet and its list methods answer empty until Step 3.2.
+    execFileSync('git', ['remote', 'add', 'origin', 'git@gitlab.com:acme/demo.git'], { cwd: repoRoot });
+    const res = await apiRequest(app, '/api/v1/github');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ available: true, syncedAt: expect.any(String), issues: [], prs: [] });
+  });
 });

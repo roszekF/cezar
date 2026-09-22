@@ -129,6 +129,17 @@ describe('the github comments API', () => {
     expect(await res.json()).toEqual({ available: false, reason: 'No supported forge remote detected', comments: [] });
   });
 
+  it('degrades in the payload for a GitLab remote, whose driver has no listComments yet', async () => {
+    execFileSync('git', ['remote', 'set-url', 'origin', 'git@gitlab.com:acme/demo.git'], { cwd: repoRoot });
+    const res = await apiRequest(app, '/api/v1/github/comments/issue/142');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      available: false,
+      reason: 'Comments are not supported for this gitlab remote',
+      comments: [],
+    });
+  });
+
   it('still 400s a malformed param before it looks for a forge', async () => {
     execFileSync('git', ['remote', 'remove', 'origin'], { cwd: repoRoot });
     const res = await apiRequest(app, '/api/v1/github/comments/banana/1');

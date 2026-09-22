@@ -23,7 +23,7 @@
 | 1 | 1.8 | Route PR changes and draft-PR creation through the driver | dispatch | done | 81a4912b |
 | 2 | 2.1 | Add forge/discovery.ts with the host ladder and cache | dispatch | done | pending |
 | 2 | 2.2 | Wire discovery into forge/index.ts and the boot warm-up | dispatch:capable | done | pending |
-| 2 | 2.3 | Carry path and web origin on ParsedRemote | dispatch | todo | — |
+| 2 | 2.3 | Carry path and web origin on ParsedRemote | dispatch | done | pending |
 | 2 | 2.4 | Build the GitHub viewUrl from the parsed origin | dispatch:cheap | todo | — |
 | 3 | 3.1 | GitLab driver skeleton with detect and registration | dispatch:capable | todo | — |
 | 3 | 3.2 | GitLab listIssues and listPRs | dispatch | todo | — |

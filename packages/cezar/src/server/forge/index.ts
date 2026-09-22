@@ -34,34 +34,60 @@ export interface ParsedRemote {
   host: string;
   owner: string;
   repo: string;
+  /** Full project path, `.git` stripped, no leading/trailing slashes (e.g. `group/sub/repo`).
+   *  For a two-segment remote this equals `owner/repo`; a subgroup or an on-prem instance path
+   *  prefix (cezar cannot tell the two apart) adds the extra segments in front. */
+  path: string;
+  /** The remote's web origin (spec 2026-08-10-forge-provider-adapters, Decision D3): `http(s)://`
+   *  remotes keep their own scheme and port; every non-web transport (`ssh://`, `git://`,
+   *  `git+ssh://`, scp-form) maps to `https://<host>` with no port — an SSH port is never a web
+   *  port. Never carries credentials. `forgeWebRoot` = `${origin}/${path}`. */
+  origin: string;
 }
 
 /**
- * Parse a git remote URL into host/owner/repo. Handles the scheme forms
- * (`https://`, `ssh://`, `git://`, with optional credentials and port) and the
- * scp-like form (`git@host:owner/repo.git`). Null for local paths and anything
- * else that doesn't look like a forge remote.
+ * Parse a git remote URL into host/owner/repo/path/origin. Handles the scheme forms
+ * (`https://`, `ssh://`, `git://`, `git+ssh://`, with optional credentials and port) and the
+ * scp-like form (`git@host:owner/repo.git`). Null for local paths and anything else that doesn't
+ * look like a forge remote.
+ *
+ * Mirror rule: `web/src/lib/tasks-table.ts` `githubRepoBase` is a documented duplicate of this
+ * parser (cockpit code can't import server code) — change both in the same commit (Step 3.9 widens
+ * the web copy the same way).
  */
 export function parseRemote(remote: string): ParsedRemote | null {
   const r = remote.trim().replace(/\/+$/, '');
-  let host: string | undefined;
-  let path: string | undefined;
-  const url = /^(?:https?|ssh|git|git\+ssh):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/.exec(r);
+  let host: string;
+  let rawPath: string;
+  let origin: string;
+  const url = /^(https?|ssh|git|git\+ssh):\/\/(?:[^@/]+@)?([^/:]+)(?::(\d+))?\/(.+)$/.exec(r);
   if (url) {
-    [, host, path] = url;
+    const [, scheme, h, port, p] = url;
+    if (!scheme || !h || !p) return null;
+    host = h;
+    rawPath = p;
+    // http(s) remotes keep their own scheme and port (D3) — an on-prem instance may run on a
+    // non-default port, and that is a genuine part of its web origin. Every other transport below
+    // maps to the plain https web origin with no port.
+    origin = /^https?$/i.test(scheme)
+      ? `${scheme.toLowerCase()}://${h.toLowerCase()}${port ? `:${port}` : ''}`
+      : `https://${h.toLowerCase()}`;
   } else {
     // scp-like: [user@]host:owner/repo(.git) — a leading '/' (local path)
     // can't match the host group, so plain directories fall through to null.
     const scp = /^(?:[^@/:]+@)?([^:/]+):(.+)$/.exec(r);
     if (!scp) return null;
-    [, host, path] = scp;
+    const [, h, p] = scp;
+    if (!h || !p) return null;
+    host = h;
+    rawPath = p;
+    origin = `https://${h.toLowerCase()}`;
   }
-  if (!host || !path) return null;
-  const parts = path.replace(/\.git$/i, '').split('/').filter(Boolean);
+  const parts = rawPath.replace(/\.git$/i, '').split('/').filter(Boolean);
   const owner = parts[parts.length - 2];
   const repo = parts[parts.length - 1];
   if (!owner || !repo) return null;
-  return { host: host.toLowerCase(), owner, repo };
+  return { host: host.toLowerCase(), owner, repo, path: parts.join('/'), origin };
 }
 
 // ---- Host classification (spec 2026-08-10-forge-provider-adapters § Forge discovery) ----------
@@ -155,7 +181,7 @@ export function forgeKindOfRemote(remote: string | undefined): ForgeKind | null 
 export function forgeWebRoot(remote: string | undefined): string | null {
   const parsed = remote ? parseRemote(remote) : null;
   if (!parsed || !forgeKindOfHost(parsed.host)) return null;
-  return `https://${parsed.host}/${parsed.owner}/${parsed.repo}`;
+  return `${parsed.origin}/${parsed.path}`;
 }
 
 /** Remote host → driver | null. Any `github` host (github.com or a GitHub Enterprise host) gets the

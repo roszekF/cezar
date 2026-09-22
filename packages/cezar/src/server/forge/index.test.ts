@@ -40,19 +40,38 @@ vi.mock('node:child_process', async (importOriginal) => {
 const info = (remote?: string): RepoInfo => ({ root: '/repo', branch: 'main', remote });
 
 describe('parseRemote', () => {
+  // Every case names host/owner/repo (unchanged meaning: the last two path segments) plus the
+  // Step 2.3 additions `path` (full project path, `.git` stripped) and `origin` (web origin, D3:
+  // http(s) keeps its own scheme+port, every other transport maps to plain https with no port).
   it.each([
-    ['https://github.com/acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo' }],
-    ['https://github.com/acme/demo', { host: 'github.com', owner: 'acme', repo: 'demo' }],
-    ['https://user:token@github.com/acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo' }],
-    ['git@github.com:acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo' }],
-    ['ssh://git@github.com/acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo' }],
-    ['ssh://git@github.com:2222/acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo' }],
-    ['git://github.com/acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo' }],
-    ['https://GitHub.com/acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo' }],
-    ['https://github.com/acme/demo/', { host: 'github.com', owner: 'acme', repo: 'demo' }],
-    ['git@gitlab.com:group/sub/project.git', { host: 'gitlab.com', owner: 'sub', repo: 'project' }],
+    ['https://github.com/acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo', path: 'acme/demo', origin: 'https://github.com' }],
+    ['https://github.com/acme/demo', { host: 'github.com', owner: 'acme', repo: 'demo', path: 'acme/demo', origin: 'https://github.com' }],
+    ['https://user:token@github.com/acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo', path: 'acme/demo', origin: 'https://github.com' }],
+    ['git@github.com:acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo', path: 'acme/demo', origin: 'https://github.com' }],
+    ['ssh://git@github.com/acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo', path: 'acme/demo', origin: 'https://github.com' }],
+    ['ssh://git@github.com:2222/acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo', path: 'acme/demo', origin: 'https://github.com' }],
+    ['git://github.com/acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo', path: 'acme/demo', origin: 'https://github.com' }],
+    ['https://GitHub.com/acme/demo.git', { host: 'github.com', owner: 'acme', repo: 'demo', path: 'acme/demo', origin: 'https://github.com' }],
+    ['https://github.com/acme/demo/', { host: 'github.com', owner: 'acme', repo: 'demo', path: 'acme/demo', origin: 'https://github.com' }],
+    ['git@gitlab.com:group/sub/project.git', { host: 'gitlab.com', owner: 'sub', repo: 'project', path: 'group/sub/project', origin: 'https://gitlab.com' }],
+    // GitLab and on-prem cases (Step 2.3): subgroups, scp-form, ssh:// with a port (dropped),
+    // http:// with a port (kept), a non-root instance path, and credentials never leaking out.
+    ['https://gitlab.com/group/repo.git', { host: 'gitlab.com', owner: 'group', repo: 'repo', path: 'group/repo', origin: 'https://gitlab.com' }],
+    ['https://gitlab.com/group/sub/repo', { host: 'gitlab.com', owner: 'sub', repo: 'repo', path: 'group/sub/repo', origin: 'https://gitlab.com' }],
+    ['https://gitlab.com/a/b/c/repo.git', { host: 'gitlab.com', owner: 'c', repo: 'repo', path: 'a/b/c/repo', origin: 'https://gitlab.com' }],
+    ['git@gitlab.acme.internal:group/sub/repo.git', { host: 'gitlab.acme.internal', owner: 'sub', repo: 'repo', path: 'group/sub/repo', origin: 'https://gitlab.acme.internal' }],
+    ['ssh://git@gitlab.acme.internal:2222/group/repo.git', { host: 'gitlab.acme.internal', owner: 'group', repo: 'repo', path: 'group/repo', origin: 'https://gitlab.acme.internal' }],
+    ['http://gitlab.acme.internal:8929/group/repo', { host: 'gitlab.acme.internal', owner: 'group', repo: 'repo', path: 'group/repo', origin: 'http://gitlab.acme.internal:8929' }],
+    ['https://intranet/gitlab/group/repo', { host: 'intranet', owner: 'group', repo: 'repo', path: 'gitlab/group/repo', origin: 'https://intranet' }],
+    ['https://user:tok@github.com/o/r.git', { host: 'github.com', owner: 'o', repo: 'r', path: 'o/r', origin: 'https://github.com' }],
+    ['https://gitlab.com/group/repo/', { host: 'gitlab.com', owner: 'group', repo: 'repo', path: 'group/repo', origin: 'https://gitlab.com' }],
   ])('parses %s', (remote, expected) => {
     expect(parseRemote(remote)).toEqual(expected);
+  });
+
+  it('never leaks credentials into path or origin', () => {
+    const parsed = parseRemote('https://user:tok@github.com/o/r.git');
+    expect(JSON.stringify(parsed)).not.toMatch(/user|tok/);
   });
 
   it.each([
@@ -62,6 +81,43 @@ describe('parseRemote', () => {
     [''],
   ])('rejects %s', (remote) => {
     expect(parseRemote(remote)).toBeNull();
+  });
+});
+
+describe('forgeWebRoot with path/origin (Step 2.3)', () => {
+  afterEach(() => {
+    __setForgeHostsForTests(null);
+    __setForgeHostCacheFileForTests(null);
+  });
+
+  it.each([
+    ['https://gitlab.com/group/repo.git', 'https://gitlab.com/group/repo'],
+    ['https://gitlab.com/group/sub/repo', 'https://gitlab.com/group/sub/repo'],
+    ['https://gitlab.com/a/b/c/repo.git', 'https://gitlab.com/a/b/c/repo'],
+    ['https://user:tok@github.com/o/r.git', 'https://github.com/o/r'],
+    ['https://gitlab.com/group/repo/', 'https://gitlab.com/group/repo'],
+  ])('builds %s → %s from well-known hosts alone', (remote, expected) => {
+    expect(forgeWebRoot(remote)).toBe(expected);
+  });
+
+  it('scp-form on-prem GitLab remote: origin has no port', () => {
+    __setForgeHostsForTests({ 'gitlab.acme.internal': 'gitlab' });
+    expect(forgeWebRoot('git@gitlab.acme.internal:group/sub/repo.git')).toBe('https://gitlab.acme.internal/group/sub/repo');
+  });
+
+  it('ssh:// on-prem GitLab remote with a port: the port never reaches the web origin', () => {
+    __setForgeHostsForTests({ 'gitlab.acme.internal': 'gitlab' });
+    expect(forgeWebRoot('ssh://git@gitlab.acme.internal:2222/group/repo.git')).toBe('https://gitlab.acme.internal/group/repo');
+  });
+
+  it('http:// on-prem GitLab remote with a port: the port IS the web origin', () => {
+    __setForgeHostsForTests({ 'gitlab.acme.internal': 'gitlab' });
+    expect(forgeWebRoot('http://gitlab.acme.internal:8929/group/repo')).toBe('http://gitlab.acme.internal:8929/group/repo');
+  });
+
+  it('non-root https instance: the instance prefix rides along as part of path', () => {
+    __setForgeHostsForTests({ intranet: 'gitlab' });
+    expect(forgeWebRoot('https://intranet/gitlab/group/repo')).toBe('https://intranet/gitlab/group/repo');
   });
 });
 

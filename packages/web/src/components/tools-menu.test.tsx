@@ -241,31 +241,45 @@ describe('ToolsMenu', () => {
   })
 })
 
-/** The env-chips popover is where the spec's degradation table says the missing-GitHub hint
- *  lives (R6 Step 1.1) — the note must explain the hidden tab, in the server's own words. */
+/** The env-chips popover is where the spec's degradation table says the missing-forge hint
+ *  lives (R6 Step 1.1, forge-neutral since spec 2026-08-10 Step 3.8) — the note must explain
+ *  the hidden tab, in the server's own words. */
 describe('forgeNote', () => {
   it('is null while the forge works — nothing to explain', () => {
     expect(forgeNote({ ...HEALTH, forge: { kind: 'github', available: true } })).toBeNull()
   })
 
-  it('a null forge explains the hidden tab as a missing GitHub remote', () => {
-    expect(forgeNote(HEALTH)).toContain('No GitHub remote detected')
-    expect(forgeNote(HEALTH)).toContain('GitHub tab is hidden')
+  // Forge-neutral since spec 2026-08-10-forge-provider-adapters, Step 3.8: `health.forge === null`
+  // means the remote classified as neither forge, so there is no kind left to name the tab after.
+  it('a null forge explains the hidden tab as no forge remote, GitHub or GitLab', () => {
+    expect(forgeNote(HEALTH)).toContain('No GitHub or GitLab remote detected')
+    expect(forgeNote(HEALTH)).toContain('the forge tab is hidden')
   })
 
-  it('an unavailable driver carries the server reason verbatim', () => {
+  it('an unavailable GitHub driver carries the server reason verbatim, named GitHub', () => {
     const note = forgeNote({
       ...HEALTH,
       forge: { kind: 'github', available: false, reason: 'gh not logged in' },
     })
     expect(note).toContain('gh not logged in')
+    expect(note).toContain('GitHub is unreachable')
     expect(note).toContain('GitHub tab is hidden')
+  })
+
+  it('an unavailable GitLab driver carries the server reason verbatim, named GitLab', () => {
+    const note = forgeNote({
+      ...HEALTH,
+      forge: { kind: 'gitlab', available: false, reason: 'glab not logged in' },
+    })
+    expect(note).toContain('glab not logged in')
+    expect(note).toContain('GitLab is unreachable')
+    expect(note).toContain('GitLab tab is hidden')
   })
 
   it('renders in the open menu when the forge is absent, and not when it works', async () => {
     const { unmount } = renderMenu(HEALTH)
     let menu = await openMenu()
-    expect(within(menu).getByText(/No GitHub remote detected/)).toBeTruthy()
+    expect(within(menu).getByText(/No GitHub or GitLab remote detected/)).toBeTruthy()
     unmount()
 
     renderMenu({ ...HEALTH, forge: { kind: 'github', available: true } })

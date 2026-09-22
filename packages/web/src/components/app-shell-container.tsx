@@ -10,6 +10,7 @@ import { ProviderBannerContainer } from '@/components/provider-banner-container'
 import { ProjectGroups } from '@/components/project-groups'
 import { TaskQuickListContainer } from '@/components/task-quick-list'
 import { ToolsMenu } from '@/components/tools-menu'
+import { forgeLabel } from '@/lib/forge-display'
 import { useDocumentTitle } from '@/lib/use-document-title'
 import { useActiveProjectId } from '@/lib/project-router'
 import { unreadDoneCount } from '@/lib/read-state'
@@ -102,7 +103,12 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
     ? null
     : (activeProject?.name ??
       (isBootProject ? (repoChipOf(health.data)?.name ?? null) : null))
-  const pageLabel = titleLabel ?? titleContext.pageLabel
+  // The boot folder's health-level answer (spec 2026-08-10, Step 3.8) — same source as the flat
+  // nav's `forgeAvailable` below. The multi-project sidebar's per-group nav reads each entry's
+  // OWN `forge` field instead (`ProjectGroups`), which this single title cannot represent when
+  // more than one project is registered; that mismatch already exists for `forgeAvailable`.
+  const forgeKind = health.data?.forge?.kind
+  const pageLabel = titleLabel ?? (titleContext.pageLabel === 'GitHub' ? forgeLabel(forgeKind) : titleContext.pageLabel)
 
   useDocumentTitle({ projectName, pageLabel })
 
@@ -163,6 +169,8 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
         // the chips: the nav must not claim a GitHub tab it cannot back. The Tools menu's
         // forge note says why it is absent.
         forgeAvailable={health.data?.forge?.available === true}
+        // Same source as the title above — the boot folder's health-level answer (Step 3.8).
+        forgeKind={forgeKind}
         // Hidden unless health reports the opt-in inbox (#471) — same honesty rule as above:
         // the nav must not offer an Inbox this server will never fill.
         inboxAvailable={inboxAvailable}

@@ -4,7 +4,7 @@ import { useNavigate as useRouterNavigate } from 'react-router'
 import { useHealth, useProjects, useRuns, useRunsIndex, useSkills, useUiState } from '@/api/queries'
 import { scopeTo, useActiveProjectId, useNavigate } from '@/lib/project-router'
 import type { ProjectListEntry, RunIndexEntry, RunRecord } from '@open-mercato/cezar-api-client'
-import { visibleNavItems } from '@/components/nav-items'
+import { resolveForgeNavItems, visibleNavItems } from '@/components/nav-items'
 import { StatusDot } from '@/components/status-dot'
 import { NEXT_THEME } from '@/components/theme-toggle'
 import { useTheme } from '@/components/theme-provider'
@@ -452,11 +452,14 @@ function PaletteContent({ close }: { close: () => void }) {
               All tasks
             </CommandItem>
           ) : null}
-          {visibleNavItems({
-            forge: health.data?.forge?.available === true,
-            inbox: health.data?.capabilities.followups === true,
-            automations: health.data?.capabilities.automations === true,
-          }).map((item) => {
+          {resolveForgeNavItems(
+            visibleNavItems({
+              forge: health.data?.forge?.available === true,
+              inbox: health.data?.capabilities.followups === true,
+              automations: health.data?.capabilities.automations === true,
+            }),
+            health.data?.forge?.kind,
+          ).map((item) => {
             const Icon = item.icon
             return (
               <CommandItem

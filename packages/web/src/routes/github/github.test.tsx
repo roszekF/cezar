@@ -1102,6 +1102,27 @@ describe('the unavailable forge state', () => {
       expect(sent.some((request) => request.path === '/api/v1/github?limit=1000&refresh=1')).toBe(true),
     )
   })
+
+  // Spec 2026-08-10-forge-provider-adapters, Step 3.8: the same tab, driven by a GitLab payload —
+  // the title, icon and hint follow `health.forge.kind` instead of assuming GitHub. The route's
+  // OWN `/api/v1/github` shape is unchanged (BACKWARD_COMPATIBILITY.md §2); only `health` differs.
+  it('renders the GitLab title and hint when health classifies the remote as gitlab', async () => {
+    const unavailable: GithubData = { available: false, reason: 'glab not installed', issues: [], prs: [] }
+    stubFetch({
+      'GET /api/v1/github?limit=1000': () => jsonResponse(unavailable),
+      'GET /api/v1/health': () => jsonResponse({ ...health(['claude']), forge: { kind: 'gitlab', available: false } }),
+    })
+    renderAt('/github')
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { level: 1, name: 'GitLab is unavailable here' })).toBeTruthy(),
+    )
+    expect(screen.getByText('glab not installed')).toBeTruthy()
+    // The hint names `glab`/`glab auth login`/GitLab, not the GitHub-flavored default text.
+    expect(screen.getByText('glab')).toBeTruthy()
+    expect(screen.getByText('glab auth login')).toBeTruthy()
+    expect(screen.getByText(/and a repo with a GitLab remote/)).toBeTruthy()
+  })
 })
 
 // ---- hand to agent ----------------------------------------------------------------------------

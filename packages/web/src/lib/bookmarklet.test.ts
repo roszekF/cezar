@@ -198,9 +198,32 @@ describe('bookmarkletUrl GitLab matcher (spec 2026-08-10-forge-provider-adapters
 })
 
 describe('gitlabHostsFromProjects', () => {
-  it('always includes gitlab.com even with no registered projects', () => {
-    expect(gitlabHostsFromProjects(undefined)).toEqual(['gitlab.com'])
-    expect(gitlabHostsFromProjects([])).toEqual(['gitlab.com'])
+  // Step 5.8: seeding `gitlab.com` unconditionally gave EVERY production launcher the GitLab
+  // alternation and the wider alert, so the byte-identical GitHub output was true only of a
+  // default no caller used.
+  it('yields no host at all when the workspace has no GitLab project', () => {
+    expect(gitlabHostsFromProjects(undefined)).toEqual([])
+    expect(gitlabHostsFromProjects([])).toEqual([])
+    expect(gitlabHostsFromProjects([{ forge: 'github', repoUrl: 'https://github.com/o/r' }, {}])).toEqual([])
+  })
+
+  it('a GitHub-only workspace regenerates the pre-GitLab launcher byte for byte', () => {
+    const hosts = gitlabHostsFromProjects([
+      { forge: 'github', repoUrl: 'https://github.com/o/r' },
+      { forge: 'github', repoUrl: 'https://github.example.com/o/r' },
+    ])
+    const derived = bookmarkletUrl('om-fix', true, 'sekret', 'http://localhost:4321', 'acme', hosts)
+    expect(derived).toBe(bookmarkletUrl('om-fix', true, 'sekret', 'http://localhost:4321', 'acme'))
+    const code = program(derived)
+    expect(code).toContain(`'Open a GitHub PR or issue first'`)
+    expect(code).not.toContain('gitlab')
+  })
+
+  it('includes gitlab.com once a gitlab.com project is registered', () => {
+    expect(gitlabHostsFromProjects([
+      { forge: 'gitlab', repoUrl: 'https://gitlab.com/group/repo' },
+      { forge: 'github', repoUrl: 'https://github.com/o/r' },
+    ])).toEqual(['gitlab.com'])
   })
 
   it('adds a self-managed host from a forge: gitlab project with a repoUrl', () => {
@@ -210,10 +233,16 @@ describe('gitlabHostsFromProjects', () => {
       { forge: 'gitlab' }, // no repoUrl — skipped
       {},
     ])
+    // A self-managed-only workspace is still a GitLab workspace, so gitlab.com rides along.
     expect(hosts).toContain('gitlab.com')
     expect(hosts).toContain('gitlab.acme.internal')
     expect(hosts).not.toContain('github.com')
     expect(hosts).toHaveLength(2)
+  })
+
+  it('keeps the scheme-bearing host of an http on-prem instance (port included)', () => {
+    expect(gitlabHostsFromProjects([{ forge: 'gitlab', repoUrl: 'http://gitlab.acme.internal:8929/group/repo' }]))
+      .toEqual(['gitlab.com', 'gitlab.acme.internal:8929'])
   })
 
   it('de-duplicates when a project already lives on gitlab.com', () => {

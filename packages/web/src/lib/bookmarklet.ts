@@ -37,20 +37,20 @@
  * file allowance).
  *
  * GitLab matcher (spec 2026-08-10-forge-provider-adapters, Step 4.5): the page matcher is built
- * from a list of GitLab hosts the caller passes in (`gitlabHosts` below) — `gitlab.com` plus any
- * self-managed host the workspace has a registered `forge: 'gitlab'` project on
- * (`routes/settings/bookmarklets-section.tsx` derives this list from `useProjects()`'s
- * `forge`/`repoUrl` pair, the same registry `BookmarkletPanel` already reads for labels and
- * scoping). An EMPTY list (the default — no caller-known GitLab host) reproduces the pre-GitLab
- * matcher and alert text byte for byte, so every already-saved bookmarklet, and every call site
- * that does not pass hosts, is unaffected. The GitLab URL shape mirrors the server-side one
+ * from a list of GitLab hosts the caller passes in (`gitlabHosts` below) — every host the
+ * workspace has a registered `forge: 'gitlab'` project on, plus `gitlab.com` once at least one
+ * such project exists (`routes/settings/bookmarklets-section.tsx` derives this list from
+ * `useProjects()`'s `forge`/`repoUrl` pair, the same registry `BookmarkletPanel` already reads
+ * for labels and scoping). An EMPTY list — the default, and what a GitHub-only workspace derives
+ * (Step 5.8) — reproduces the pre-GitLab matcher and alert text byte for byte, so every
+ * already-saved bookmarklet, every call site that does not pass hosts, and every launcher a
+ * workspace with no GitLab project generates, is unaffected. The GitLab URL shape mirrors the server-side one
  * (`runs/store.ts` `GITLAB_PROJECT_URL`, Step 4.4): `http(s)://<host>/<path…>/-/(merge_requests|
  * issues)/N`, path at least two segments so subgroups match. The scheme is optional there and
  * here (Step 5.7): the harvested host keeps whatever scheme and port the project's `repoUrl`
  * carries (Decision D3), and an on-prem instance is routinely plain `http` on a custom port —
  * pinned to `https:` such a host could be collected but never matched. Every regex metacharacter
- * in a host
- * is escaped, so `gitlab.example.com` cannot match `gitlabXexampleXcom` and an IPv6 host
+ * in a host is escaped, so `gitlab.example.com` cannot match `gitlabXexampleXcom` and an IPv6 host
  * (`[2001:db8::1]:8929`) cannot turn into a character class — or, unbalanced, into a `new RegExp`
  * that throws on the page (Step 4.5-review-fix).
  */
@@ -125,16 +125,27 @@ export function bookmarkletUrl(
 
 /**
  * Derives the GitLab hosts a caller should pass to `bookmarkletUrl` from the project registry
- * (`GET /api/v1/projects`): `gitlab.com` always (the well-known default, mirroring the server's
- * `forge/discovery.ts` well-known host map), plus every registered project's `repoUrl` origin
- * where `forge === 'gitlab'` — a self-managed instance the workspace already knows about.
+ * (`GET /api/v1/projects`): every registered `forge: 'gitlab'` project's `repoUrl` origin — a
+ * self-managed instance the workspace already knows about — plus `gitlab.com`, the well-known
+ * default (mirroring the server's `forge/discovery.ts` well-known host map).
+ *
+ * `gitlab.com` is seeded only when the workspace HAS at least one GitLab project (Step 5.8).
+ * Seeding it unconditionally meant every real launcher carried the GitLab alternation and the
+ * wider alert copy, so the byte-identical GitHub output above was true only of a default no
+ * caller used. A GitHub-only workspace now derives an empty list and regenerates exactly the
+ * program it always generated. A workspace whose only GitLab project is self-managed still gets
+ * `gitlab.com` as well: it is a GitLab workspace, its users do open gitlab.com merge requests
+ * (the upstream of a mirrored project, a vendor's repo), and the matcher is a page filter, not
+ * an authorization boundary — the cockpit still resolves the `ref` against its own projects.
  */
 export function gitlabHostsFromProjects(
   projects: readonly { forge?: string; repoUrl?: string }[] | undefined,
 ): string[] {
+  const gitlabProjects = (projects ?? []).filter((project) => project.forge === 'gitlab')
+  if (gitlabProjects.length === 0) return []
   const hosts = new Set<string>(['gitlab.com'])
-  for (const project of projects ?? []) {
-    if (project.forge !== 'gitlab' || !project.repoUrl) continue
+  for (const project of gitlabProjects) {
+    if (!project.repoUrl) continue
     try {
       hosts.add(new URL(project.repoUrl).host)
     } catch {

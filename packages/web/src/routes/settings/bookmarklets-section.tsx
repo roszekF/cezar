@@ -88,8 +88,10 @@ export function BookmarkletPanel({ skills }: { skills: readonly Skill[] }) {
     repoChipOf(health.data)?.name ??
     null
   // GitLab hosts this workspace knows about (spec 2026-08-10-forge-provider-adapters, Step 4.5):
-  // gitlab.com plus any registered project's self-managed GitLab remote — so the launcher also
-  // matches a GitLab merge-request/issue page, not only GitHub's.
+  // any registered project's self-managed GitLab remote, plus gitlab.com once the workspace has
+  // a GitLab project at all (Step 5.8) — so the launcher also matches a GitLab merge-request/
+  // issue page, not only GitHub's. A GitHub-only workspace derives none, and its launchers are
+  // the pre-GitLab program byte for byte.
   const gitlabHosts = useMemo(
     () => gitlabHostsFromProjects(projects.data?.projects),
     [projects.data],

@@ -1,6 +1,7 @@
 import {
   FolderIcon,
   FolderOpenIcon,
+  GitForkIcon,
   LayersIcon,
   MenuIcon,
   PlusIcon,
@@ -16,7 +17,6 @@ import type { ForgeKind } from '@open-mercato/cezar-api-client'
 import { AddProjectDialog } from '@/components/add-project-dialog'
 import { CloneProjectDialog } from '@/components/clone-project-dialog'
 import { openCommandPalette } from '@/components/command-palette'
-import { GithubIcon } from '@/components/icons'
 import { commandShortcutHint } from '@/lib/use-command-shortcut'
 import { Link, stripProjectPrefix } from '@/lib/project-router'
 import { StatusDot } from '@/components/status-dot'
@@ -786,8 +786,8 @@ function AddProjectMenu() {
           Open local folder…
         </DropdownMenuItem>
         <DropdownMenuItem data-slot="add-project-clone" onSelect={() => setCloning(true)}>
-          <GithubIcon aria-hidden="true" />
-          Clone from GitHub…
+          <GitForkIcon aria-hidden="true" />
+          Clone from a git forge…
         </DropdownMenuItem>
       </DropdownMenuContent>
       {browsing ? <AddProjectDialog open onOpenChange={setBrowsing} /> : null}

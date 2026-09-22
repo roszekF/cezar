@@ -259,9 +259,10 @@ export interface ServerDeps {
    *  the app (tests, future CLI hooks). */
   workspaceEvents?: WorkspaceEventBus;
   /** How `POST /api/projects/checkout` (step 4.3) actually clones. Defaults to
-   *  `gh repo clone` (or the `CEZ_DRY_RUN=1` fake) — injected by tests so the
-   *  route's guards, cleanup and error surfacing are exercised for real
-   *  against real temp dirs, without a network or a `gh` binary. */
+   *  `gh repo clone` / `glab repo clone` by the source's forge (or the
+   *  `CEZ_DRY_RUN=1` fake) — injected by tests so the route's guards, cleanup
+   *  and error surfacing are exercised for real against real temp dirs,
+   *  without a network or a `gh`/`glab` binary. */
   cloneRunner?: CloneRunner;
   /** Host-wide model discovery service. Tests inject a deterministic adapter. */
   modelCatalog?: RunnerModelCatalog;
@@ -2639,7 +2640,7 @@ export function createApp(deps: ServerDeps) {
       return c.json(body);
     })
 
-    .post('/projects/checkout', jsonZodValidator(() => checkoutSchema, { message: 'url must be a GitHub repository' }), async (c) => {
+    .post('/projects/checkout', jsonZodValidator(() => checkoutSchema, { message: 'url must be a git forge repository (GitHub or GitLab)' }), async (c) => {
       if (capabilities().singleProject) {
         return c.json(singleProjectRefusal('adding projects'), 409);
       }
@@ -2657,8 +2658,8 @@ export function createApp(deps: ServerDeps) {
         ...(deps.cloneRunner ? { run: deps.cloneRunner } : {}),
       });
       if (!result.ok) {
-        // `reason` rides along on the 503 (`gh` unavailable) — the spec's
-        // `{ error, reason }` degradation, mirroring the GitHub pane.
+        // `reason` rides along on the 503 (`gh`/`glab` unavailable) — the spec's
+        // `{ error, reason }` degradation, mirroring the forge pane.
         return c.json(
           'reason' in result ? { error: result.error, reason: result.reason } : { error: result.error },
           result.status,

@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -22,10 +23,12 @@ import {
   cleanupCheckout,
   ghCloneArgs,
   ghCloneRunner,
+  glabCloneArgs,
   isValidCheckoutName,
   parseRepoRef,
   type CloneRunner,
 } from './checkout.ts';
+import { __setForgeHostsForTests } from './forge/index.ts';
 import { apiRequest } from './loopback-request.testkit.ts';
 import {
   WorkspaceEventBus,
@@ -60,6 +63,7 @@ describe('checkout — repo reference parsing', () => {
       '  open-mercato/cezar  ',
     ]) {
       expect(parseRepoRef(input), input).toEqual({
+        kind: 'github',
         owner: 'open-mercato',
         repo: 'cezar',
         slug: 'open-mercato/cezar',
@@ -74,8 +78,13 @@ describe('checkout — repo reference parsing', () => {
       '   ',
       'cezar',
       'open-mercato/cezar/extra',
-      'https://gitlab.com/owner/repo',
+      'https://bitbucket.org/owner/repo',
+      'git@bitbucket.org:owner/repo.git',
       'https://evil.example/github.com/owner/repo',
+      // A github.com URL the GitHub shape refuses never falls through to the
+      // GitLab parser, and a GitHub Enterprise host stays out of this flow.
+      'git://github.com/owner/repo',
+      'https://github.example.com/owner/repo',
       '--upload-pack=touch /tmp/pwned',
       'owner/--flag',
       '../../etc/passwd',
@@ -84,6 +93,90 @@ describe('checkout — repo reference parsing', () => {
     ]) {
       expect(parseRepoRef(input), input).toBeNull();
     }
+  });
+
+  describe('GitLab sources (spec 2026-08-10-forge-provider-adapters, Step 4.2)', () => {
+    beforeEach(() => {
+      // An on-prem instance discovery would have classified, and a GHE host to
+      // prove only `gitlab` hosts take this path.
+      __setForgeHostsForTests({ 'git.corp.example': 'gitlab', 'github.corp.example': 'github' });
+    });
+    afterEach(() => {
+      __setForgeHostsForTests(null);
+    });
+
+    it('accepts https, ssh and scp spellings on a GitLab host and rebuilds a credential-free https URL', () => {
+      for (const input of [
+        'https://gitlab.com/gitlab-org/cli',
+        'https://gitlab.com/gitlab-org/cli.git',
+        'https://gitlab.com/gitlab-org/cli/',
+        'https://user:glpat-secret@gitlab.com/gitlab-org/cli.git',
+        'ssh://git@gitlab.com/gitlab-org/cli.git',
+        'git@gitlab.com:gitlab-org/cli.git',
+        '  git@gitlab.com:gitlab-org/cli  ',
+      ]) {
+        expect(parseRepoRef(input), input).toEqual({
+          kind: 'gitlab',
+          owner: 'gitlab-org',
+          repo: 'cli',
+          slug: 'gitlab-org/cli',
+          cloneUrl: 'https://gitlab.com/gitlab-org/cli.git',
+        });
+      }
+    });
+
+    it('allows subgroups in the source path; the repo (and default folder) is the last segment', () => {
+      expect(parseRepoRef('https://gitlab.com/group/sub/deeper/tool.git')).toEqual({
+        kind: 'gitlab',
+        owner: 'deeper',
+        repo: 'tool',
+        slug: 'group/sub/deeper/tool',
+        cloneUrl: 'https://gitlab.com/group/sub/deeper/tool.git',
+      });
+      expect(parseRepoRef('git@git.corp.example:platform/infra/deploy.git')).toMatchObject({
+        kind: 'gitlab',
+        repo: 'deploy',
+        slug: 'platform/infra/deploy',
+        cloneUrl: 'https://git.corp.example/platform/infra/deploy.git',
+      });
+      // An http(s) on-prem origin keeps its own scheme and port (D3).
+      expect(parseRepoRef('http://git.corp.example:8080/team/app')).toMatchObject({
+        kind: 'gitlab',
+        cloneUrl: 'http://git.corp.example:8080/team/app.git',
+      });
+    });
+
+    it('refuses unknown hosts, non-GitLab forge hosts and hostile GitLab paths', () => {
+      for (const input of [
+        'https://unknown.example/group/repo',
+        'git@unknown.example:group/repo.git',
+        'https://github.corp.example/owner/repo',
+        'https://gitlab.com/solo',
+        'https://gitlab.com/group/--upload-pack=touch',
+        'https://gitlab.com/group/.hidden',
+        'https://gitlab.com/group/repo%2F..',
+        'https://gitlab.com/group/repo?x=1',
+        'https://gitlab.com/group/repo;rm -rf',
+        'gitlab.com/group/repo',
+        `https://gitlab.com/${Array.from({ length: 22 }, (_, i) => `g${i}`).join('/')}`,
+      ]) {
+        expect(parseRepoRef(input), input).toBeNull();
+      }
+    });
+
+    it('hands glab the rebuilt URL, never the raw input', () => {
+      const ref = parseRepoRef('git@git.corp.example:platform/deploy.git');
+      expect(ref).not.toBeNull();
+      if (!ref) return;
+      expect(glabCloneArgs(ref, '/checkouts/deploy')).toEqual([
+        'repo',
+        'clone',
+        'https://git.corp.example/platform/deploy.git',
+        '/checkouts/deploy',
+        '--',
+        '--progress',
+      ]);
+    });
   });
 
   it('a folder name is one boring path segment — never a traversal', () => {
@@ -318,6 +411,49 @@ describe('checkoutRepo — clone, failure cleanup, existing target', () => {
     expect(existsSync(join(root, 'cezar'))).toBe(false);
   });
 
+  it('clones a GitLab subgroup source into <projectsDir>/<last segment> via the shared dry run', async () => {
+    const seen: string[] = [];
+    const spy: CloneRunner = async (ref, dir, onLine) => {
+      seen.push(`${ref.kind} ${ref.cloneUrl} ${dir}`);
+      onLine('Cloning into ...');
+      await mkdir(join(dir, '.git'), { recursive: true });
+      return { ok: true };
+    };
+    const result = await run({ url: 'https://gitlab.com/group/sub/tool.git', run: spy });
+    expect(result).toMatchObject({ ok: true, name: 'tool', target: join(root, 'tool') });
+    expect(seen).toEqual([`gitlab https://gitlab.com/group/sub/tool.git ${join(root, 'tool')}`]);
+
+    const dry = await run({ url: 'git@gitlab.com:group/sub/other.git', run: undefined });
+    expect(dry).toMatchObject({ ok: true, name: 'other' });
+    expect(existsSync(join(root, 'other', '.git'))).toBe(true);
+  });
+
+  it('400s an unknown forge host with the neutral message and writes nothing', async () => {
+    const result = await run({ url: 'https://unknown.example/group/repo' });
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
+      error: 'not a git forge repository: https://unknown.example/group/repo',
+    });
+    expect(readdirSync(root)).toEqual([]);
+  });
+
+  it('degrades to a glab hint + 503 when glab is not installed for a GitLab source', async () => {
+    const missing: CloneRunner = async () => ({
+      ok: false,
+      error: 'spawn glab ENOENT',
+      notFound: true,
+    });
+    const result = await run({ url: 'https://gitlab.com/gitlab-org/cli', run: missing });
+    expect(result).toEqual({
+      ok: false,
+      status: 503,
+      error: 'glab CLI not found — install the GitLab CLI and run `glab auth login`',
+      reason: 'glab CLI not found — install the GitLab CLI and run `glab auth login`',
+    });
+    expect(existsSync(join(root, 'cli'))).toBe(false);
+  });
+
   it('409s on an existing target and does NOT touch it', async () => {
     const existing = join(root, 'cezar');
     mkdirSync(existing, { recursive: true });
@@ -508,10 +644,24 @@ describe('POST /api/v1/projects/checkout', () => {
     expect(body.error).toBe(body.reason);
   });
 
+  it('clones and registers a GitLab source; a missing glab degrades with its own hint', async () => {
+    await useCheckoutRoot();
+    const ok = await post({ url: 'https://gitlab.com/group/sub/tool' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.project).toMatchObject({ name: 'tool', source: 'checkout' });
+    expect(ok.body.project?.root).toBe(join(checkoutRoot, 'tool'));
+
+    const cloneRunner: CloneRunner = async () => ({ ok: false, error: 'spawn glab ENOENT', notFound: true });
+    const { status, body } = await post({ url: 'git@gitlab.com:group/other.git' }, { cloneRunner });
+    expect(status).toBe(503);
+    expect(body.reason).toContain('glab auth login');
+    expect(body.error).toBe(body.reason);
+  });
+
   it('400s a non-GitHub url, a traversing name, and a malformed body — nothing written', async () => {
     await useCheckoutRoot();
     for (const payload of [
-      { url: 'https://gitlab.com/owner/repo' },
+      { url: 'https://bitbucket.org/owner/repo' },
       { url: 'not a repo' },
       { url: 'open-mercato/cezar', name: '../escape' },
       {},

@@ -21,3 +21,9 @@
 - Decision: Tasks-table SHAs are backfilled at checkpoints (a commit cannot record its own SHA).
 - Decision (1.4): null/unknown-forge list/search/comments answer 'No supported forge remote detected' in-payload; see checkpoint-1-checks.md.
 - Delegations: 1.1, 1.2 executors (inherited model); 1.3, 1.4 at tier capable (opus); 1.5 at tier standard (sonnet).
+
+## 2026-09-22T14:16:23Z — checkpoint 2 (Phase 1 close: 1.6..1.8-review-fix)
+- Full gate green except one load flake (workflows/auto-resume ENOTEMPTY cleanup race; passes alone). e2e: 33 failures on branch vs 35 on main baseline (same machine) — pre-existing; one branch-only spec (composer-defaults) fails on a harness fetch socket reset, suspected keep-alive race, re-check at final gate.
+- Blocker found and fixed inline: 1.8 null-forge short-circuit skipped createDraftPr's autosave → 1.8-review-fix (7ec3ab5f).
+- Process note: the 1.7 executor landed a follow-up typing commit (5f7bae12) → recorded as row 1.7-review-fix; ea6aada9 alone fails typecheck (bisect gap, not rewritten — no history rewrites on a pushed branch). Executor rules now require typecheck BEFORE committing.
+- Delegations: 1.6+1.7 one executor (tier standard/sonnet), 1.8 (standard/sonnet).

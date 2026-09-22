@@ -18,9 +18,9 @@
 | 1 | 1.3 | Extract forge/cli.ts shared adapter plumbing | dispatch:capable | done | a45d4b4e |
 | 1 | 1.4 | Route GET /github and /github/search through the driver | dispatch:capable | done | d078b602 |
 | 1 | 1.5 | Route GET /github/comments through forge.listComments | dispatch | done | a05ebeda |
-| 1 | 1.6 | Route GET /github/checks through forge.listChecks | dispatch | done | pending |
-| 1 | 1.7 | Route GET /github/ref-status through forge.refStatus | dispatch | done | pending |
-| 1 | 1.8 | Route PR changes and draft-PR creation through the driver | dispatch | done | pending |
+| 1 | 1.6 | Route GET /github/checks through forge.listChecks | dispatch | done | 336d55bb |
+| 1 | 1.7 | Route GET /github/ref-status through forge.refStatus | dispatch | done | ea6aada9 |
+| 1 | 1.8 | Route PR changes and draft-PR creation through the driver | dispatch | done | 81a4912b |
 | 2 | 2.1 | Add forge/discovery.ts with the host ladder and cache | dispatch | todo | — |
 | 2 | 2.2 | Wire discovery into forge/index.ts and the boot warm-up | dispatch:capable | todo | — |
 | 2 | 2.3 | Carry path and web origin on ParsedRemote | dispatch | todo | — |
@@ -42,7 +42,7 @@
 | 4 | 4.6 | GitHub-event automations require a GitHub forge | dispatch | todo | — |
 | 4 | 4.7 | Documentation for the second forge | inline | todo | — |
 | 1 | 1.7-review-fix | Type the driver-stub test payloads explicitly | inline | done | 5f7bae12 |
-| 1 | 1.8-review-fix | Keep the pre-seam draft-PR path when no forge resolves | inline | done | pending |
+| 1 | 1.8-review-fix | Keep the pre-seam draft-PR path when no forge resolves | inline | done | 7ec3ab5f |
 
 ## Goal
 

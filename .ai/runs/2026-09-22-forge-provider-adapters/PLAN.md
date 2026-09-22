@@ -46,7 +46,7 @@
 | 3 | 3.2-review-fix | Freeze the clock in the GitLab dry-run list test | inline | done | 927f232b |
 | 3 | 3.8-review-fix | Finish forge-aware copy across the forge tab | dispatch | done | b195fece |
 | 3 | 3.1-review-fix | Name GitLab in the merge-state fallback | inline | done | b9f7d22b |
-| 4 | 4.2-review-fix | Persist the glab credential helper after a GitLab clone | dispatch | todo | — |
+| 4 | 4.2-review-fix | Persist the glab credential helper after a GitLab clone | dispatch | done | pending |
 
 ## Goal
 

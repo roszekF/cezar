@@ -81,7 +81,9 @@ export interface RepoRef {
    *  is not. Passing only `owner/repo` silently selects that rejected key.
    *  The resulting HTTPS `origin` needs a credential path of its own after the
    *  clone — see `persistGhCredentialHelper`. GitLab: `<web origin>/<path>.git`,
-   *  rebuilt from the parsed remote so credentials in the input never survive. */
+   *  rebuilt from the parsed remote so credentials in the input never survive —
+   *  its origin needs the same credential path after the clone, see
+   *  `persistGlabCredentialHelper` / `gitlabCloneOrigin`. */
   cloneUrl: string;
 }
 
@@ -360,16 +362,64 @@ export function glabCloneArgs(ref: RepoRef, dir: string): string[] {
   return ['repo', 'clone', ref.cloneUrl, dir, '--', '--progress'];
 }
 
+/** GitLab twin of `persistGhCredentialHelper` (4.2-review-fix): `glab` also
+ *  injects credentials only for the clone command itself, so without this a
+ *  task worktree's first raw `git push` against an HTTPS GitLab remote would
+ *  have nothing to authenticate with. Keyed on the clone's own origin — never
+ *  a hardcoded host — because a GitLab source can be gitlab.com or any
+ *  discovered on-prem instance, each needing its own `credential.<origin>.helper`
+ *  entry (glab 1.118 provides `glab auth git-credential`, the twin of
+ *  `gh auth git-credential`). */
+async function persistGlabCredentialHelper(dir: string, origin: string): Promise<boolean> {
+  for (const args of [
+    ['--replace-all', `credential.${origin}.helper`, ''],
+    ['--add', `credential.${origin}.helper`, '!glab auth git-credential'],
+  ]) {
+    const ok = await new Promise<boolean>((resolvePromise) => {
+      execFile('git', ['-C', dir, 'config', '--local', ...args],
+        { timeout: 10_000 }, (err) => resolvePromise(!err));
+    });
+    if (!ok) return false;
+  }
+  return true;
+}
+
+/** The origin `credential.<origin>.helper` is keyed on, recovered from
+ *  `cloneUrl` rather than threaded through as a separate field: `parseGitlabRef`
+ *  always rebuilds `cloneUrl` as `${origin}/${slug}.git` (the parsed remote's web
+ *  origin, D3 — always `http(s)://host[:port]`, never a path), so `new URL(...)
+ *  .origin` recovers it exactly. Guarded rather than assumed: if that invariant
+ *  ever breaks, the clone must fail loudly instead of keying a credential helper
+ *  against the wrong (or an unparsable) origin. */
+function gitlabCloneOrigin(ref: RepoRef): string {
+  const url = new URL(ref.cloneUrl);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`glab clone URL is not http(s): ${ref.cloneUrl}`);
+  }
+  return url.origin;
+}
+
 /** `glab repo clone` — the GitLab twin of `ghCloneRunner`, same streaming,
- *  cancellation and ENOENT degradation. `NO_PROMPT` is glab's
- *  `GH_PROMPT_DISABLED`. */
+ *  cancellation and ENOENT degradation, plus its own persisted credential
+ *  helper (4.2-review-fix) so later task-worktree pushes authenticate through
+ *  `glab`. `NO_PROMPT` is glab's `GH_PROMPT_DISABLED`. */
 export const glabCloneRunner: CloneRunner = (ref, dir, onLine, signal) =>
   spawnClone(
     'glab',
     glabCloneArgs(ref, dir),
     { ...process.env, NO_PROMPT: '1', GIT_TERMINAL_PROMPT: '0' },
     'glab repo clone',
-    async () => ({ ok: true }),
+    async () => {
+      let origin: string;
+      try {
+        origin = gitlabCloneOrigin(ref);
+      } catch (err) {
+        return { ok: false, error: errText(err) };
+      }
+      return (await persistGlabCredentialHelper(dir, origin))
+        ? { ok: true }
+        : { ok: false, error: 'Could not configure GitLab credentials for the checkout. Check directory permissions and retry.' };
+    },
     onLine,
     signal,
   );

@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -24,6 +25,7 @@ import {
   ghCloneArgs,
   ghCloneRunner,
   glabCloneArgs,
+  glabCloneRunner,
   isValidCheckoutName,
   parseRepoRef,
   type CloneRunner,
@@ -228,6 +230,83 @@ describe('checkout — persisted GitHub credentials', () => {
       vi.unstubAllEnvs();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('checkout — persisted GitLab credentials (4.2-review-fix)', () => {
+  /** A fake `glab` that behaves like the real one for this test's purposes: it
+   *  clones (`git init` + `remote add`) into the directory `checkoutRepo`
+   *  already created, exactly like `ghCloneRunner`'s fake `gh` does above. */
+  const FAKE_GLAB = '#!/bin/sh\ngit init -q "$4" && git -C "$4" remote add origin "$3"\n';
+
+  const withFakeGlab = async (
+    script: string,
+    fn: (root: string, repo: string) => Promise<void>,
+  ): Promise<void> => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), 'cez-glab-credentials-'));
+    const bin = join(root, 'bin');
+    const repo = join(root, 'repo');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'glab'), script, { mode: 0o755 });
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+    vi.stubEnv('GIT_CONFIG_GLOBAL', '/dev/null');
+    vi.stubEnv('GIT_CONFIG_NOSYSTEM', '1');
+    try {
+      await fn(root, repo);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  it('leaves a gitlab.com origin and a local helper usable from task worktrees', async () => {
+    await withFakeGlab(FAKE_GLAB, async (root, repo) => {
+      const ref = parseRepoRef('https://gitlab.com/gitlab-org/cli')!;
+      expect(await glabCloneRunner(ref, repo, () => {}, undefined)).toEqual({ ok: true });
+      const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+      expect(git('remote', 'get-url', 'origin').trim()).toBe('https://gitlab.com/gitlab-org/cli.git');
+      expect(git('config', '--local', '--get-all', 'credential.https://gitlab.com.helper')).toBe('\n!glab auth git-credential\n');
+      git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-qm', 'initial');
+      const worktree = join(root, 'task');
+      git('worktree', 'add', '-qb', 'task', worktree);
+      expect(execFileSync('git', ['-C', worktree, 'config', '--get-all', 'credential.https://gitlab.com.helper'], { encoding: 'utf8' })).toBe('\n!glab auth git-credential\n');
+    });
+  });
+
+  it('keys the helper on a port-bearing on-prem origin, never a hardcoded host', async () => {
+    __setForgeHostsForTests({ 'git.corp.example': 'gitlab' });
+    try {
+      await withFakeGlab(FAKE_GLAB, async (_root, repo) => {
+        const ref = parseRepoRef('http://git.corp.example:8080/team/app')!;
+        expect(await glabCloneRunner(ref, repo, () => {}, undefined)).toEqual({ ok: true });
+        const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+        expect(git('remote', 'get-url', 'origin').trim()).toBe('http://git.corp.example:8080/team/app.git');
+        expect(git('config', '--local', '--get-all', 'credential.http://git.corp.example:8080.helper')).toBe('\n!glab auth git-credential\n');
+      });
+    } finally {
+      __setForgeHostsForTests(null);
+    }
+  });
+
+  it('fails the clone (rather than leave `glab` uncredentialed) when the helper cannot be written', async () => {
+    // The clone itself succeeds, but `.git` is then made unwritable — `git
+    // config` writes via a lockfile + rename, so it's the DIRECTORY's write
+    // permission that has to go, not the file's. Same shape a permissions
+    // problem on the checkout root would leave: a real clone, no credential
+    // helper.
+    await withFakeGlab(`${FAKE_GLAB}chmod 0555 "$4/.git"\n`, async (_root, repo) => {
+      const ref = parseRepoRef('https://gitlab.com/gitlab-org/cli')!;
+      try {
+        expect(await glabCloneRunner(ref, repo, () => {}, undefined)).toEqual({
+          ok: false,
+          error: 'Could not configure GitLab credentials for the checkout. Check directory permissions and retry.',
+        });
+      } finally {
+        // Restore write access so `withFakeGlab`'s own `rmSync(root, ...)` can
+        // remove `.git`'s contents afterwards.
+        chmodSync(join(repo, '.git'), 0o755);
+      }
+    });
   });
 });
 

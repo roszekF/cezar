@@ -1116,7 +1116,9 @@ export class RunManager {
       return `sandbox: ${message}${hint ? ` — ${hint}` : ''}`;
     }
     if (created) {
-      this.store.updateRun(runId, { sandbox: { ...record.sandbox, createdAt: new Date().toISOString(), removedAt: undefined } });
+      this.store.updateRun(runId, {
+        sandbox: { ...record.sandbox, agent: backend as SandboxAgent, createdAt: new Date().toISOString(), removedAt: undefined },
+      });
       this.store.appendEvent(runId, { type: 'lifecycle', message: `sandbox ${record.sandbox.name} created` });
     }
     const boxed = sandboxAgentSpec(spec, {

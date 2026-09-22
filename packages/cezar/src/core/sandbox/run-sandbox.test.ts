@@ -200,3 +200,17 @@ describe('sandboxAuthHint', () => {
     expect(sandboxAuthHint('npm test failed with exit code 1')).toBeUndefined();
   });
 });
+
+describe('one agent kit per sandbox', () => {
+  it('refuses a step on the other backend instead of failing inside the VM', async () => {
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), 'cez-kit-')));
+    await expect(
+      prepareRunSandbox({
+        repoRoot: repo,
+        dataDir: join(repo, '.ai/cezar'),
+        record: { id: RUN_ID, sandbox: { name: `cez-${RUN_ID}`, agent: 'claude' }, worktreePath: join(repo, 'wt') },
+        backend: 'codex',
+      }),
+    ).rejects.toThrow(/sandbox was created for claude/);
+  });
+});

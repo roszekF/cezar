@@ -172,6 +172,9 @@ export const runRecordSchema = z.object({
       provider: z.literal('docker-sbx'),
       /** `cez-<runId>` — the `sbx` sandbox name. */
       name: z.string(),
+      /** The agent kit the sandbox was created with — one per sandbox, so a step on another
+       *  backend is refused rather than failing as "command not found" inside the VM. */
+      agent: z.enum(['claude', 'codex']).optional(),
       /** Set once `sbx create` first succeeded. */
       createdAt: z.string().optional(),
       /** Set once the sandbox was removed (run deleted, variant lost, worktree reclaimed). */

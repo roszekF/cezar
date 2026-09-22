@@ -32,7 +32,7 @@ import { pinnedAdminDir, registerSandboxedWorktree, unregisterSandboxedWorktree 
 
 export interface SandboxedRecord {
   id: string;
-  sandbox?: { name: string; createdAt?: string; removedAt?: string };
+  sandbox?: { name: string; agent?: 'claude' | 'codex'; createdAt?: string; removedAt?: string };
   worktreePath?: string;
   status?: string;
 }
@@ -74,6 +74,13 @@ export async function prepareRunSandbox(input: PrepareInput): Promise<{ created:
   if (!record.sandbox) throw new Error('internal: prepareRunSandbox on a run without a sandbox');
   if (backend !== 'claude' && backend !== 'codex') {
     throw new Error(`a sandboxed run supports Claude and Codex only — this step uses ${backend}`);
+  }
+  // One agent kit per sandbox: the VM has `claude` OR `codex` installed, not both. Without this
+  // a Continue on the other backend fails as a bare "command not found" inside the VM.
+  if (record.sandbox.agent && record.sandbox.agent !== backend) {
+    throw new Error(
+      `this run's sandbox was created for ${record.sandbox.agent} — continue it on ${record.sandbox.agent}, or remove the run's worktree to start a fresh sandbox on ${backend}`,
+    );
   }
   const worktree = record.worktreePath;
   if (!worktree) throw new Error('a sandboxed run needs its worktree, and this run has none');

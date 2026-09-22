@@ -181,6 +181,9 @@ export const runRecordSchema = z.object({
     .object({
       provider: z.literal('docker-sbx'),
       name: z.string(),
+      /** The agent kit the sandbox was created with — one per sandbox, so a step on another
+       *  backend is refused rather than failing as "command not found" inside the VM. */
+      agent: z.enum(['claude', 'codex']).optional(),
       createdAt: z.string().optional(),
       removedAt: z.string().optional(),
     })

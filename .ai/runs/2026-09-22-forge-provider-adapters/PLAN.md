@@ -51,7 +51,7 @@
 | 3 | 3.8-review-fix-2 | Forge kind per viewed project, not the boot project | dispatch | done | pending |
 | 4 | 4.4-review-fix | Match http and on-prem ports in GitLab run-bookkeeping URLs | dispatch | done | pending |
 | 4 | 4.4-review-fix-2 | Keep the foreign-reference guard working on GitLab | dispatch | done | pending |
-| 4 | 4.5-review-fix | Escape every regex metacharacter in bookmarklet hosts | dispatch | todo | — |
+| 4 | 4.5-review-fix | Escape every regex metacharacter in bookmarklet hosts | dispatch | done | pending |
 | 4 | 4.6-review-fix | Keep GitHub-event automations on github.com only | dispatch | todo | — |
 | 4 | 4.3-review-fix | Keep the glab probe off the health request path | dispatch | todo | — |
 | 3 | 3.4-review-fix | Bound the GitLab checks fan-out with one deadline | dispatch | todo | — |

@@ -45,8 +45,10 @@
  * matcher and alert text byte for byte, so every already-saved bookmarklet, and every call site
  * that does not pass hosts, is unaffected. The GitLab URL shape mirrors the server-side one
  * (`runs/store.ts` `GITLAB_PROJECT_URL`, Step 4.4): `https://<host>/<path…>/-/(merge_requests|
- * issues)/N`, path at least two segments so subgroups match. Host dots are escaped so
- * `gitlab.example.com` cannot match `gitlabXexampleXcom`.
+ * issues)/N`, path at least two segments so subgroups match. Every regex metacharacter in a host
+ * is escaped, so `gitlab.example.com` cannot match `gitlabXexampleXcom` and an IPv6 host
+ * (`[2001:db8::1]:8929`) cannot turn into a character class — or, unbalanced, into a `new RegExp`
+ * that throws on the page (Step 4.5-review-fix).
  */
 
 /** The cockpit's default origin — the fallback when a caller can't supply `window.location.origin`. */
@@ -58,10 +60,16 @@ const GITHUB_PATTERN = String.raw`^https:\/\/github\.com\/([^\/]+)\/([^\/]+)\/(p
 const GITHUB_ALERT = 'Open a GitHub PR or issue first'
 const BOTH_FORGES_ALERT = 'Open a GitHub or GitLab pull/merge request or issue first'
 
-/** Escapes a host's dots for splicing into the regex source below — a host must match itself
- *  literally, not any single character in its place (`gitlab.com` must not match `gitlabXcom`). */
-function escapeHostDots(host: string): string {
-  return host.replace(/\./g, '\\.')
+/** Escapes every regex metacharacter in a host for splicing into the regex source below — a host
+ *  must match itself literally, whatever it contains.
+ *
+ *  Dots were the obvious case (`gitlab.com` must not match `gitlabXcom`), but the host comes from
+ *  `new URL(project.repoUrl).host`, which for an IPv6 instance is `[2001:db8::1]:8929`: spliced
+ *  raw, its brackets become a character class that matches the wrong pages, and the unbalanced
+ *  `[` of a bracket-carrying alternation makes the in-page `new RegExp` THROW — the bookmarklet
+ *  then does nothing at all (Step 4.5-review-fix). */
+function escapeHostForRegex(host: string): string {
+  return host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 /**
@@ -71,7 +79,7 @@ function escapeHostDots(host: string): string {
  */
 function buildMatcher(gitlabHosts: readonly string[]): { pattern: string; alert: string } {
   if (gitlabHosts.length === 0) return { pattern: GITHUB_PATTERN, alert: GITHUB_ALERT }
-  const hostAlternation = gitlabHosts.map(escapeHostDots).join('|')
+  const hostAlternation = gitlabHosts.map(escapeHostForRegex).join('|')
   // Same shape as `runs/store.ts`'s server-side `GITLAB_PROJECT_URL` (Step 4.4): everything
   // before `/-/` is the project path, at least two segments so a subgroup (`group/sub/repo`)
   // matches too. Unlike the server-side pattern the host is a fixed whitelist here (this code

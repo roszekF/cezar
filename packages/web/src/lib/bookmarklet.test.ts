@@ -125,6 +125,36 @@ describe('bookmarkletUrl GitLab matcher (spec 2026-08-10-forge-provider-adapters
     expect(matcher.test('https://gitlabXacmeXinternal/group/repo/-/merge_requests/5')).toBe(false)
   })
 
+  // Step 4.5-review-fix: the host comes from `new URL(project.repoUrl).host`, and for an IPv6
+  // instance that is `[2001:db8::1]:8929`. Escaping only dots spliced those brackets into the
+  // pattern as a character class — and an unbalanced `[` made the in-page `new RegExp` throw, so
+  // the bookmarklet did nothing at all on every page.
+  it('matches an IPv6 GitLab host literally instead of reading its brackets as a character class', () => {
+    const code = program(
+      bookmarkletUrl('', false, 'k', 'http://localhost:4321', null, ['gitlab.com', '[2001:db8::1]:8929']),
+    )
+    const source = code.match(/location\.href\.match\(\/(.+?)\/\);/)?.[1]
+    expect(source).toBeDefined()
+    const matcher = new RegExp(source as string)
+    expect(matcher.test('https://[2001:db8::1]:8929/group/repo/-/merge_requests/12')).toBe(true)
+    expect(matcher.test('https://[2001:db8::1]:8929/group/sub/repo/-/issues/3')).toBe(true)
+    // The brackets are literal, so none of the characters inside them is a host of its own.
+    expect(matcher.test('https://2/group/repo/-/merge_requests/12')).toBe(false)
+    expect(matcher.test('https://gitlab.com/group/repo/-/merge_requests/12')).toBe(true)
+  })
+
+  it('survives a host carrying a lone `[` — the generated program still compiles', () => {
+    const code = program(bookmarkletUrl('', false, 'k', 'http://localhost:4321', null, ['we[ird.example']))
+    const source = code.match(/location\.href\.match\(\/(.+?)\/\);/)?.[1]
+    expect(source).toBeDefined()
+    expect(() => new RegExp(source as string)).not.toThrow()
+    const matcher = new RegExp(source as string)
+    // The bracket is part of the host, not the start of a class that swallows the rest of it.
+    expect(matcher.test('https://we[ird.example/group/repo/-/merge_requests/1')).toBe(true)
+    // And GitHub — the half that has nothing to do with the odd host — still matches.
+    expect(matcher.test('https://github.com/open-mercato/cezar/pull/1')).toBe(true)
+  })
+
   it('rejects a GitLab-shaped path with only one segment', () => {
     const code = program(bookmarkletUrl('', false, 'k', 'http://localhost:4321', null, ['gitlab.com']))
     const matcher = new RegExp(

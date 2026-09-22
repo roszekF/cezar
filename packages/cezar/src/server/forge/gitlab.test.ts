@@ -1229,7 +1229,20 @@ const diffModified = {
   new_file: false,
   deleted_file: false,
   renamed_file: false,
-  diff: '--- a/src/mod.ts\n+++ b/src/mod.ts\n@@ -1,2 +1,3 @@\n-old1\n-old2\n+new1\n+new2\n+new3',
+  // Hunks only, as the real `.../diffs` payload carries them: the paths live in the row's own
+  // fields, and no `---`/`+++` file header opens the text.
+  diff: '@@ -1,2 +1,3 @@\n-old1\n-old2\n+new1\n+new2\n+new3',
+};
+/** A front-matter fence deleted and a fence-like line added: content whose first characters are
+ *  the ones a unified-diff header would use. */
+const diffFences = {
+  old_path: 'docs/page.md',
+  new_path: 'docs/page.md',
+  new_file: false,
+  deleted_file: false,
+  renamed_file: false,
+  // Deletes `---`, `title: Page`, `---` and adds `+++ header-ish`, `title: Page`, `~~~`.
+  diff: '@@ -1,3 +1,3 @@\n----\n-title: Page\n----\n++++ header-ish\n+title: Page\n+~~~',
 };
 
 describe('GitLab driver — prDiff', () => {
@@ -1242,7 +1255,7 @@ describe('GitLab driver — prDiff', () => {
     vi.unstubAllEnvs();
   });
 
-  it('maps added/removed/renamed/modified files, counting +/- lines and excluding the +++/--- headers', async () => {
+  it('maps added/removed/renamed/modified files, counting every +/- line', async () => {
     routeGlabPrDiff({
       detail: mrDetailSha(HEAD_SHA),
       diffs: (page) => (page === 1 ? [diffAdded, diffRemoved, diffRenamed, diffModified] : []),
@@ -1256,12 +1269,29 @@ describe('GitLab driver — prDiff', () => {
       { path: 'src/new.ts', status: 'added', additions: 2, deletions: 0, patch: diffAdded.diff },
       { path: 'src/gone.ts', status: 'removed', additions: 0, deletions: 2, patch: diffRemoved.diff },
       { path: 'src/new-name.ts', previousPath: 'src/old-name.ts', status: 'renamed', additions: 1, deletions: 1, patch: diffRenamed.diff },
-      // 2 deletions, 3 additions — the `---`/`+++` file-header lines are NOT counted.
       { path: 'src/mod.ts', status: 'modified', additions: 3, deletions: 2, patch: diffModified.diff },
     ]);
     expect(data.additions).toBe(2 + 0 + 1 + 3);
     expect(data.deletions).toBe(0 + 2 + 1 + 2);
     expect(data.truncated).toBe(false);
+  });
+
+  // The `.../diffs` payload carries hunks, not unified-diff headers, so a `+++`/`---` prefix is
+  // content: skipping it under-reported a diff that touches a YAML front-matter fence.
+  it('counts content lines that begin with --- or +++', async () => {
+    routeGlabPrDiff({
+      detail: mrDetailSha(HEAD_SHA),
+      diffs: (page) => (page === 1 ? [diffFences] : []),
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.prDiff!(3950);
+    expect(data.available).toBe(true);
+    if (!data.available) throw new Error('expected available');
+    expect(data.files).toEqual([
+      { path: 'docs/page.md', status: 'modified', additions: 3, deletions: 3, patch: diffFences.diff },
+    ]);
+    expect(data.additions).toBe(3);
+    expect(data.deletions).toBe(3);
   });
 
   it('drops a patch over FORGE_PR_PATCH_CAP with patchUnavailableReason too-large, truncated', async () => {

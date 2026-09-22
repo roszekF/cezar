@@ -870,14 +870,19 @@ function diffStatus(row: GlDiffRow): 'added' | 'removed' | 'renamed' | 'modified
   return 'modified';
 }
 
-/** `+`/`-` line counts from a unified diff, excluding the `+++`/`---` file headers (spec Step 3.5)
- *  — `glab`'s diffs endpoint reports no separate stat, unlike GitHub's `additions`/`deletions`
- *  fields, so the numbers come from the diff text itself. */
+/** `+`/`-` line counts from one row's diff (spec Step 3.5) — `glab`'s diffs endpoint reports no
+ *  separate stat, unlike GitHub's `additions`/`deletions` fields, so the numbers come from the
+ *  diff text itself.
+ *
+ *  Every `+`/`-` line counts, including one spelling `+++` or `---`. The `.../diffs` payload
+ *  carries hunks only: each row's `diff` opens at `@@`, with the file names in the row's own
+ *  `old_path`/`new_path` instead of a `---`/`+++` header (verified against captured gitlab.com
+ *  responses). Skipping those prefixes therefore dropped real content — the `---` fence a deleted
+ *  YAML front matter block opens with, an added `+++` line — and under-reported the diff. */
 function countDiffLines(diff: string): { additions: number; deletions: number } {
   let additions = 0;
   let deletions = 0;
   for (const line of diff.split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue;
     if (line.startsWith('+')) additions++;
     else if (line.startsWith('-')) deletions++;
   }

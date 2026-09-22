@@ -11,6 +11,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import type { RunRecord } from '../../runs/store.ts';
 import { evictForgeProjectCaches } from './cli.ts';
+import { GH_CHECKS_MAX } from './github.ts';
 import { parseRemote, type ParsedRemote } from './index.ts';
 import {
   GLAB_NOT_FOUND_REASON,
@@ -194,9 +195,17 @@ describe('GitLab driver — detect', () => {
 });
 
 describe('GitLab driver — skeleton members (later steps implement them)', () => {
-  it('has no MR probe or links, and refuses merge-request creation', async () => {
+  beforeEach(() => {
+    vi.stubEnv('CEZ_DRY_RUN', '');
+    execFileMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('has no links yet, and refuses merge-request creation', async () => {
     const driver = createGitlabDriver(freshRoot(), parsed());
-    expect(await driver.prStatus('feature')).toBeNull();
     expect(driver.viewUrl('repo', '')).toBeNull();
     expect(
       await driver.createPR({ repoRoot: '/repo', run: {} as RunRecord, handoffText: '' }),
@@ -205,9 +214,8 @@ describe('GitLab driver — skeleton members (later steps implement them)', () =
 
   it('leaves the optional capabilities absent, so the routes degrade in the payload', () => {
     const driver = createGitlabDriver(freshRoot(), parsed());
-    // listAll (Step 3.2) and listComments (Step 3.3) are now implemented — everything else still
-    // lands on later Steps.
-    expect(driver.listChecks).toBeUndefined();
+    // listAll (3.2), listComments (3.3) and listChecks (3.4) are now implemented — everything else
+    // still lands on later Steps (refStatus stays absent for good — spec Non-goals).
     expect(driver.refStatus).toBeUndefined();
     expect(driver.searchItems).toBeUndefined();
     expect(driver.prDiff).toBeUndefined();
@@ -785,5 +793,290 @@ describe('GitLab driver — listComments with timeline events', () => {
     expect(data.events).toHaveLength(1);
     expect(data.events![0]!.kind).toBe('labeled');
     expect(execFileMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---- listChecks / prStatus (Step 3.4) ----------------------------------------------------------
+// `glab api projects/:fullpath/merge_requests/:iid` is the ONLY endpoint either capability reads —
+// `glab mr list` payloads never carry the pipeline (Drift note, spec
+// 2026-08-10-forge-provider-adapters). `mrDetail` builds the fixture shape for that endpoint;
+// `routeGlabMr` answers both it (`api`) and the branch probe (`mr list`).
+
+/** `head_pipeline` fixture shapes: `undefined` → the field is absent (no pipeline ever ran, the
+ *  real shape a brand-new MR reports), `null` → present but explicitly null (glab also does this),
+ *  a string → `{status}`. Both `undefined` and `null` map to the same "no glyph" answer. */
+const mrDetail = (pipelineStatus?: string | null): string =>
+  JSON.stringify(
+    pipelineStatus === undefined ? {} : { head_pipeline: pipelineStatus === null ? null : { status: pipelineStatus } },
+  );
+
+type MrHandler = string | { fail: string };
+
+/** Routes `glab mr list --source-branch … --all --output json` to `mrList`, and `glab api
+ *  projects/:fullpath/merge_requests/:iid` to `details[iid]`, by inspecting the call's own args —
+ *  same technique as `routeGlab`/`routeGlabApi` above. An MR id with no handler answers glab's own
+ *  404 line, matching what `glab api` prints for an id that doesn't exist. */
+function routeGlabMr(handlers: { mrList?: MrHandler; details?: Record<number, MrHandler> }) {
+  execFileMock.mockImplementation((...callArgs: unknown[]) => {
+    const cliArgs = callArgs[1] as string[];
+    const cb = callArgs[callArgs.length - 1] as Callback;
+    const respond = (handler: MrHandler | undefined, notFoundStderr: string) => {
+      if (handler === undefined) {
+        cb(Object.assign(new Error(`Command failed: glab ${cliArgs.join(' ')}`), { code: 1, stderr: `${notFoundStderr}\n` }));
+        return;
+      }
+      if (typeof handler === 'string') {
+        cb(null, { stdout: handler, stderr: '' });
+        return;
+      }
+      cb(Object.assign(new Error(`Command failed: glab ${cliArgs.join(' ')}`), { code: 1, stderr: `${handler.fail}\n` }));
+    };
+    if (cliArgs[0] === 'mr' && cliArgs[1] === 'list') {
+      respond(handlers.mrList, 'glab: unknown command');
+      return;
+    }
+    if (cliArgs[0] === 'api') {
+      const path = cliArgs[1] ?? '';
+      const iid = Number(/merge_requests\/(\d+)/.exec(path)?.[1] ?? NaN);
+      respond(handlers.details?.[iid], 'glab: 404 Not Found (HTTP 404)');
+      return;
+    }
+    cb(Object.assign(new Error(`Command failed: glab ${cliArgs.join(' ')}`), { code: 1, stderr: 'glab: unknown command\n' }));
+  });
+}
+
+describe('GitLab driver — listChecks', () => {
+  beforeEach(() => {
+    vi.stubEnv('CEZ_DRY_RUN', '');
+    execFileMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('maps every pipeline status to its glyph, and a missing head_pipeline to null', async () => {
+    routeGlabMr({
+      details: {
+        1: mrDetail('success'),
+        2: mrDetail('failed'),
+        3: mrDetail('running'),
+        4: mrDetail('pending'),
+        5: mrDetail('created'),
+        6: mrDetail('waiting_for_resource'),
+        7: mrDetail('preparing'),
+        8: mrDetail('scheduled'),
+        9: mrDetail('canceled'),
+        10: mrDetail('canceling'),
+        11: mrDetail('skipped'),
+        12: mrDetail('manual'),
+        13: mrDetail(undefined), // no head_pipeline at all
+        14: mrDetail(null), // head_pipeline explicitly null
+      },
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listChecks!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(data).toEqual({
+      available: true,
+      checks: {
+        1: 'passing',
+        2: 'failing',
+        3: 'pending',
+        4: 'pending',
+        5: 'pending',
+        6: 'pending',
+        7: 'pending',
+        8: 'pending',
+        9: null,
+        10: null,
+        11: null,
+        12: null,
+        13: null,
+        14: null,
+      },
+    });
+  });
+
+  it('omits a single non-first MR that fails, leaving the rest available', async () => {
+    routeGlabMr({ details: { 1: mrDetail('success'), 3: mrDetail('failed') } }); // 2 has no handler → fails
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listChecks!([1, 2, 3]);
+    expect(data.available).toBe(true);
+    if (!data.available) throw new Error('expected available');
+    expect(data.checks).toEqual({ 1: 'passing', 3: 'failing' });
+    expect(2 in data.checks).toBe(false);
+  });
+
+  it('caps at GH_CHECKS_MAX, de-duplicates and drops non-positive numbers', async () => {
+    const details: Record<number, MrHandler> = {};
+    for (let n = 1; n <= GH_CHECKS_MAX + 5; n++) details[n] = mrDetail('success');
+    routeGlabMr({ details });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const many = Array.from({ length: GH_CHECKS_MAX + 5 }, (_, i) => i + 1);
+    const data = await driver.listChecks!([...many, ...many, 0, -1]);
+    expect(data.available).toBe(true);
+    if (!data.available) throw new Error('expected available');
+    expect(Object.keys(data.checks)).toHaveLength(GH_CHECKS_MAX);
+  });
+
+  it('answers unavailable when the FIRST call fails with ENOENT (glab not installed)', async () => {
+    execFileMock.mockImplementation((...callArgs: unknown[]) => {
+      const cb = callArgs[callArgs.length - 1] as Callback;
+      cb(Object.assign(new Error('spawn glab ENOENT'), { code: 'ENOENT' }));
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.listChecks!([1, 2])).toEqual({ available: false, reason: GLAB_NOT_FOUND_REASON });
+  });
+
+  it("answers unavailable with glab's own reason when the FIRST call fails (e.g. unauthenticated)", async () => {
+    routeGlabMr({ details: { 1: { fail: GLAB_401 } } });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.listChecks!([1, 2])).toEqual({ available: false, reason: GLAB_401 });
+  });
+
+  it('an empty or all-invalid numbers list answers an empty map without shelling out', async () => {
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.listChecks!([])).toEqual({ available: true, checks: {} });
+    expect(await driver.listChecks!([0, -1])).toEqual({ available: true, checks: {} });
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('caches a resolved glyph per root; a second call serves it without shelling out again', async () => {
+    routeGlabMr({ details: { 1: mrDetail('success') } });
+    const root = freshRoot();
+    const driver = createGitlabDriver(root, parsed());
+    expect(await driver.listChecks!([1])).toEqual({ available: true, checks: { 1: 'passing' } });
+    const callsAfterFirst = execFileMock.mock.calls.length;
+    routeGlabMr({ details: { 1: mrDetail('failed') } }); // "server" changed underneath the cache
+    expect(await driver.listChecks!([1])).toEqual({ available: true, checks: { 1: 'passing' } });
+    expect(execFileMock.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it('evictForgeProjectCaches drops the cached glyphs for that root only', async () => {
+    routeGlabMr({ details: { 1: mrDetail('success') } });
+    const root = freshRoot();
+    const driver = createGitlabDriver(root, parsed());
+    await driver.listChecks!([1]);
+    evictForgeProjectCaches(root);
+    routeGlabMr({ details: { 1: mrDetail('failed') } });
+    expect(await driver.listChecks!([1])).toEqual({ available: true, checks: { 1: 'failing' } });
+  });
+
+  it('is available under CEZ_DRY_RUN=1 with a demo glyph, without shelling out', async () => {
+    vi.stubEnv('CEZ_DRY_RUN', '1');
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.listChecks!([1, 2])).toEqual({ available: true, checks: { 1: 'passing', 2: null } });
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GitLab driver — prStatus', () => {
+  beforeEach(() => {
+    vi.stubEnv('CEZ_DRY_RUN', '');
+    execFileMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const mrRow = (iid: number, state: string, extra: Partial<{ draft: boolean; work_in_progress: boolean }> = {}) => ({
+    iid,
+    web_url: `https://gitlab.com/acme/demo/-/merge_requests/${iid}`,
+    state,
+    draft: extra.draft ?? false,
+    work_in_progress: extra.work_in_progress ?? false,
+  });
+
+  it('maps state opened → open, with its pipeline glyph', async () => {
+    routeGlabMr({ mrList: JSON.stringify([mrRow(10, 'opened')]), details: { 10: mrDetail('success') } });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.prStatus('feature')).toEqual({
+      number: 10,
+      url: 'https://gitlab.com/acme/demo/-/merge_requests/10',
+      state: 'open',
+      isDraft: false,
+      checks: 'passing',
+    });
+  });
+
+  it('maps state merged → merged, and closed/locked → closed', async () => {
+    routeGlabMr({ mrList: JSON.stringify([mrRow(11, 'merged')]), details: {} });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect((await driver.prStatus('feature'))?.state).toBe('merged');
+
+    execFileMock.mockReset();
+    routeGlabMr({ mrList: JSON.stringify([mrRow(12, 'closed')]), details: {} });
+    expect((await createGitlabDriver(freshRoot(), parsed()).prStatus('feature'))?.state).toBe('closed');
+
+    execFileMock.mockReset();
+    routeGlabMr({ mrList: JSON.stringify([mrRow(13, 'locked')]), details: {} });
+    expect((await createGitlabDriver(freshRoot(), parsed()).prStatus('feature'))?.state).toBe('closed');
+  });
+
+  it('isDraft is true via either `draft` or legacy `work_in_progress`', async () => {
+    routeGlabMr({ mrList: JSON.stringify([mrRow(14, 'opened', { draft: true })]), details: {} });
+    expect((await createGitlabDriver(freshRoot(), parsed()).prStatus('feature'))?.isDraft).toBe(true);
+
+    execFileMock.mockReset();
+    routeGlabMr({ mrList: JSON.stringify([mrRow(15, 'opened', { work_in_progress: true })]), details: {} });
+    expect((await createGitlabDriver(freshRoot(), parsed()).prStatus('feature'))?.isDraft).toBe(true);
+  });
+
+  it('picks the highest iid when several MRs share the branch', async () => {
+    routeGlabMr({
+      mrList: JSON.stringify([mrRow(20, 'closed'), mrRow(25, 'opened'), mrRow(22, 'merged')]),
+      details: {},
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect((await driver.prStatus('feature'))?.number).toBe(25);
+  });
+
+  it('no head_pipeline on the chosen MR answers checks: null', async () => {
+    routeGlabMr({ mrList: JSON.stringify([mrRow(30, 'opened')]), details: { 30: mrDetail(undefined) } });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect((await driver.prStatus('feature'))?.checks).toBeNull();
+  });
+
+  it("a failing detail call still answers the MR, with checks: null (the glyph is a bonus)", async () => {
+    routeGlabMr({ mrList: JSON.stringify([mrRow(31, 'opened')]), details: {} }); // 31 has no detail handler → fails
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const status = await driver.prStatus('feature');
+    expect(status?.number).toBe(31);
+    expect(status?.checks).toBeNull();
+  });
+
+  it('a branch with no MR answers null', async () => {
+    routeGlabMr({ mrList: '[]' });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.prStatus('feature')).toBeNull();
+  });
+
+  it('any glab failure on the branch probe answers null, not a throw', async () => {
+    routeGlabMr({ mrList: { fail: GLAB_401 } });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.prStatus('feature')).toBeNull();
+
+    execFileMock.mockReset();
+    execFileMock.mockImplementation((...callArgs: unknown[]) => {
+      const cb = callArgs[callArgs.length - 1] as Callback;
+      cb(Object.assign(new Error('spawn glab ENOENT'), { code: 'ENOENT' }));
+    });
+    expect(await createGitlabDriver(freshRoot(), parsed()).prStatus('feature')).toBeNull();
+  });
+
+  it('is null under CEZ_DRY_RUN=1, mirroring GitHub, without shelling out', async () => {
+    vi.stubEnv('CEZ_DRY_RUN', '1');
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.prStatus('feature')).toBeNull();
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('calls `glab mr list --source-branch <branch> --all --output json` with the given branch', async () => {
+    routeGlabMr({ mrList: '[]' });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    await driver.prStatus('feature/my-branch');
+    const call = execFileMock.mock.calls.find((c) => (c[1] as string[])[0] === 'mr');
+    expect(call?.[1]).toEqual(['mr', 'list', '--source-branch', 'feature/my-branch', '--all', '--output', 'json']);
   });
 });

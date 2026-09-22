@@ -28,7 +28,7 @@
 | 3 | 3.1 | GitLab driver skeleton with detect and registration | dispatch:capable | done | pending |
 | 3 | 3.2 | GitLab listIssues and listPRs | dispatch | done | pending |
 | 3 | 3.3 | GitLab listComments with timeline events | dispatch | done | pending |
-| 3 | 3.4 | GitLab listChecks and prStatus | dispatch | todo | — |
+| 3 | 3.4 | GitLab listChecks and prStatus | dispatch | done | pending |
 | 3 | 3.5 | GitLab prDiff with forge-neutral caps | dispatch | todo | — |
 | 3 | 3.6 | GitLab searchItems | dispatch:cheap | todo | — |
 | 3 | 3.7 | GitLab viewUrl | dispatch:cheap | todo | — |

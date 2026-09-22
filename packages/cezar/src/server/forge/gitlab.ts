@@ -1,15 +1,18 @@
 import { z } from 'zod';
 import { createSwrCache, deleteKeysWithPrefix, fetchBoundedPages, isNotFound, registerProjectCacheEvictor, runCli } from './cli.ts';
-import { TIMELINE_BUDGET_MS, TIMELINE_EVENT_CAP, TIMELINE_MAX_PAGES, TIMELINE_MIN_PAGE_MS, THREAD_ENTRY_CAP } from './github.ts';
+import { GH_CHECKS_MAX, TIMELINE_BUDGET_MS, TIMELINE_EVENT_CAP, TIMELINE_MAX_PAGES, TIMELINE_MIN_PAGE_MS, THREAD_ENTRY_CAP } from './github.ts';
 import type { ParsedRemote } from './index.ts';
 import type {
   ForgeAvailability,
+  ForgeChecksData,
+  ForgeChecksGlyph,
   ForgeComment,
   ForgeCommentsData,
   ForgeDriver,
   ForgeItem,
   ForgeListData,
   ForgeListOptions,
+  ForgePrStatus,
   ForgeTimelineEvent,
   ForgeTimelineEventKind,
 } from './types.ts';
@@ -22,8 +25,9 @@ import type {
  * Step 3.1 built the skeleton: availability (`detect` / `detectCached`) and registration. Step 3.2
  * adds the list tier (`listIssues`/`listPRs`/`listAll`) — both open-only, mirroring `fetchGithub`'s
  * `GET /github` tier. Step 3.3 adds `listComments` — the conversation thread, assembled from the
- * notes + resource-event endpoints since GitLab has no single timeline call like GitHub's. The
- * remaining optional capabilities (`listChecks`, …) stay absent until their own Steps, which the
+ * notes + resource-event endpoints since GitLab has no single timeline call like GitHub's. Step 3.4
+ * adds `listChecks` (per-MR pipeline glyphs) and `prStatus` (the branch's newest merge request).
+ * The remaining optional capabilities (`prDiff`, …) stay absent until their own Steps, which the
  * routes already degrade in the payload (`… is not supported for this gitlab remote`).
  */
 
@@ -593,6 +597,182 @@ async function fetchGitlabComments(
   return data;
 }
 
+// ---- listChecks / prStatus (Step 3.4) ---------------------------------------------------------
+// GitLab has no batched-checks endpoint like GitHub's one aliased GraphQL query — the pipeline
+// rollup lives on each MR's own detail (`head_pipeline.status`), so `listChecks` fans out with
+// BOUNDED CONCURRENCY instead. `glab mr/issue list` payloads never carry it (Drift note, spec
+// 2026-08-10-forge-provider-adapters), hence the per-MR `glab api` call either capability needs.
+
+/** `glab api projects/:fullpath/merge_requests/:iid` — only the two fields either caller here
+ *  needs: the pipeline rollup (`listChecks`/`prStatus`) and the head SHA (`prDiff`, Step 3.5). */
+const glMrDetailSchema = z.object({
+  sha: z.string().optional(),
+  head_pipeline: z.object({ status: z.string() }).nullish(),
+});
+type GlMrDetail = z.infer<typeof glMrDetailSchema>;
+
+async function fetchGitlabMrDetail(repoRoot: string, iid: number): Promise<GlMrDetail> {
+  const out = await glab(repoRoot, ['api', `projects/:fullpath/merge_requests/${iid}`], 10_000);
+  return glMrDetailSchema.parse(JSON.parse(out));
+}
+
+/** GitLab pipeline `status` → the checks glyph (spec Step 3.4). `canceled`/`canceling`/`skipped`/
+ *  `manual` and "no pipeline at all" both render no glyph — kept as two branches (map miss vs.
+ *  absent `head_pipeline`) only because `pipelineGlyph` folds them the same way. */
+const GL_PIPELINE_GLYPH: Record<string, ForgeChecksGlyph> = {
+  success: 'passing',
+  failed: 'failing',
+  running: 'pending',
+  pending: 'pending',
+  created: 'pending',
+  waiting_for_resource: 'pending',
+  preparing: 'pending',
+  scheduled: 'pending',
+  canceled: null,
+  canceling: null,
+  skipped: null,
+  manual: null,
+};
+
+function pipelineGlyph(status: string | undefined | null): ForgeChecksGlyph {
+  if (!status) return null; // no `head_pipeline` at all — never ran
+  return GL_PIPELINE_GLYPH[status] ?? null;
+}
+
+/** Runs `fn` over `items` with at most `limit` in flight at once. GitLab's per-MR checks probe has
+ *  no batched endpoint to alias (unlike GitHub's single GraphQL query, `fetchPrChecks`), so this
+ *  bounds the fan-out instead of either serializing every call or firing them all at once. */
+async function mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      await fn(items[index]!);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+const CHECKS_CONCURRENCY = 5;
+
+/** Per-MR checks cache: keyed `repoRoot\0iid`, same TTL as GitHub's checks cache (`CACHE_MS`) —
+ *  its own `Map`, since `github.ts`'s `checksCache` is module-private. */
+const checksCache = new Map<string, { at: number; glyph: ForgeChecksGlyph }>();
+const CHECKS_CACHE_MAX = 500;
+
+registerProjectCacheEvictor((repoRoot) => deleteKeysWithPrefix(checksCache, `${repoRoot}\0`));
+
+/** CEZ_DRY_RUN=1 — the demo MR (#1, `mockGitlabList`) reads passing; anything else null (unknown
+ *  or no CI), mirroring `mockGithubChecks`. */
+function mockGitlabChecks(numbers: number[]): ForgeChecksData {
+  const checks: Record<number, ForgeChecksGlyph> = {};
+  for (const n of numbers) checks[n] = n === 1 ? 'passing' : null;
+  return { available: true, checks };
+}
+
+/**
+ * Lazy CI glyphs for on-screen MR rows (Step 3.4, mirrors `fetchGithubChecks`). Numbers are
+ * de-duplicated, validated and capped at `GH_CHECKS_MAX` — GitHub's own cap, reused as-is so the
+ * route enforces one ceiling for either forge. A failure on any MR AFTER the first costs only that
+ * MR's glyph (mirrors `fetchPrChecks`'s per-chunk degrade: the rest still resolve); a failure on
+ * the FIRST uncached MR is treated as `glab` itself being unusable (missing, unauthenticated,
+ * offline) rather than one MR being unreadable, and answers `{available:false, reason}` instead of
+ * a checks map with one silently missing entry.
+ */
+async function fetchGitlabChecks(repoRoot: string, numbers: number[]): Promise<ForgeChecksData> {
+  if (process.env.CEZ_DRY_RUN === '1') return mockGitlabChecks(numbers);
+  const wanted = [...new Set(numbers)].filter((n) => Number.isInteger(n) && n > 0).slice(0, GH_CHECKS_MAX);
+  if (wanted.length === 0) return { available: true, checks: {} };
+
+  const checks: Record<number, ForgeChecksGlyph> = {};
+  const misses: number[] = [];
+  const now = Date.now();
+  for (const n of wanted) {
+    const hit = checksCache.get(`${repoRoot}\0${n}`);
+    if (hit && now - hit.at < CACHE_MS) checks[n] = hit.glyph;
+    else misses.push(n);
+  }
+  if (misses.length === 0) return { available: true, checks };
+
+  const remember = (n: number, glyph: ForgeChecksGlyph): void => {
+    checks[n] = glyph;
+    checksCache.set(`${repoRoot}\0${n}`, { at: now, glyph });
+  };
+
+  const [first, ...rest] = misses;
+  try {
+    remember(first!, pipelineGlyph((await fetchGitlabMrDetail(repoRoot, first!)).head_pipeline?.status));
+  } catch (err) {
+    return { available: false, reason: isNotFound(err) ? GLAB_NOT_FOUND_REASON : glabFailureReason(err) };
+  }
+
+  await mapWithConcurrency(rest, CHECKS_CONCURRENCY, async (n) => {
+    try {
+      remember(n, pipelineGlyph((await fetchGitlabMrDetail(repoRoot, n)).head_pipeline?.status));
+    } catch {
+      // A single MR failing costs only its own glyph — mirrors `fetchPrChecks`'s per-chunk degrade.
+    }
+  });
+
+  while (checksCache.size > CHECKS_CACHE_MAX) {
+    const oldest = checksCache.keys().next();
+    if (oldest.done) break;
+    checksCache.delete(oldest.value);
+  }
+  return { available: true, checks };
+}
+
+// ---- prStatus (Step 3.4) -----------------------------------------------------------------------
+
+const glMrBranchRowSchema = z.object({
+  iid: z.number(),
+  web_url: z.string(),
+  state: z.string(),
+  draft: z.boolean().default(false),
+  work_in_progress: z.boolean().default(false),
+});
+
+const GL_MR_STATES: Record<string, ForgePrStatus['state']> = {
+  merged: 'merged',
+  closed: 'closed',
+  locked: 'closed',
+};
+
+/**
+ * The branch's newest merge request (Step 3.4, mirrors GitHub's `prStatus`): `glab mr list
+ * --source-branch <branch> --all --output json` — `--all` because a merged/closed MR must still
+ * flip Create PR → View PR — then the HIGHEST `iid` (GitLab's own creation order) wins over an
+ * older MR on the same branch. `null` for no MR, and for ANY `glab` failure (the method's contract:
+ * "null when none or the forge is down") — never a throw. The pipeline glyph costs one extra `glab
+ * api` call on the chosen MR (reusing the Step 3.4 mapper); its own failure leaves `checks: null`
+ * rather than failing the whole probe — the MR itself is the point, the glyph is a bonus.
+ */
+async function fetchGitlabPrStatus(repoRoot: string, branch: string): Promise<ForgePrStatus | null> {
+  if (process.env.CEZ_DRY_RUN === '1') return null;
+  try {
+    const out = await glab(repoRoot, ['mr', 'list', '--source-branch', branch, '--all', '--output', 'json'], 15_000);
+    const rows = z.array(glMrBranchRowSchema).parse(JSON.parse(out));
+    if (rows.length === 0) return null;
+    const newest = rows.reduce((best, row) => (row.iid > best.iid ? row : best));
+    let checks: ForgeChecksGlyph = null;
+    try {
+      checks = pipelineGlyph((await fetchGitlabMrDetail(repoRoot, newest.iid)).head_pipeline?.status);
+    } catch {
+      // The glyph is a bonus, not the point of this probe — its failure isn't the MR's.
+    }
+    return {
+      number: newest.iid,
+      url: newest.web_url,
+      state: GL_MR_STATES[newest.state] ?? 'open',
+      isDraft: newest.draft || newest.work_in_progress,
+      checks,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** `parsed` feeds `listAll`'s `repo` field and `viewUrl`'s origin + path fallback (Step 3.7). */
 export function createGitlabDriver(repoRoot: string, parsed: ParsedRemote): ForgeDriver {
   return {
@@ -609,11 +789,14 @@ export function createGitlabDriver(repoRoot: string, parsed: ParsedRemote): Forg
 
     listComments: (kind, number, opts) => fetchGitlabComments(repoRoot, parsed, kind, number, !!opts?.refresh),
 
+    // Lazy CI glyphs for on-screen MR rows (#664 parity) — byte-identical shape to GitHub's.
+    listChecks: (numbers) => fetchGitlabChecks(repoRoot, numbers),
+
     // Step 4.1 implements draft merge requests.
     createPR: async () => ({ ok: false, error: 'Merge request creation is not implemented yet for GitLab' }),
 
-    // Step 3.4 implements the per-branch merge-request probe.
-    prStatus: async () => null,
+    // The branch's open/merged/closed merge request, or null when none (or glab is down).
+    prStatus: (branch) => fetchGitlabPrStatus(repoRoot, branch),
 
     // Step 3.7 builds links from the cached `web_url` (falling back to origin + path).
     viewUrl: () => null,

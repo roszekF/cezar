@@ -111,4 +111,16 @@ describe('the github checks API', () => {
     const res = await apiRequest(app, '/api/v1/github/checks?prs=12,abc');
     expect(res.status).toBe(400);
   });
+
+  it('serves a GitLab remote through the same route (dry-run mock, Step 3.4)', async () => {
+    execFileSync('git', ['remote', 'remove', 'origin'], { cwd: repoRoot });
+    execFileSync('git', ['remote', 'add', 'origin', 'https://gitlab.com/acme/demo.git'], { cwd: repoRoot });
+    const res = await apiRequest(app, '/api/v1/github/checks?prs=1,2');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as GithubChecksData;
+    expect(body.available).toBe(true);
+    if (!body.available) throw new Error('expected available');
+    expect(body.checks[1]).toBe('passing');
+    expect(body.checks[2]).toBeNull();
+  });
 });

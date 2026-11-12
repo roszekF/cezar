@@ -174,6 +174,42 @@ describe('GitLab driver — createPR (draft merge request)', () => {
     });
   });
 
+  it('adopts the existing same-project MR when a continued task publishes again', async () => {
+    writeFileSync(join(repo, 'a.txt'), 'finished work\n');
+    glabMock.mockImplementation((...args: unknown[]) => {
+      const argv = args[1] as string[];
+      const cb = args.at(-1) as Callback;
+      if (argv[1] === 'create') return cb(new Error('exists'), '', 'MR already exists');
+      return cb(null, JSON.stringify([{ source_branch: 'cez/abc123', target_branch: 'main',
+        source_project_id: 1, target_project_id: 1, state: 'opened',
+        web_url: 'https://gitlab.com/acme/demo/-/merge_requests/42' }]));
+    });
+    const driver = createGitlabDriver(freshRoot(), remoteOf('git@gitlab.com:acme/demo.git'));
+    expect(await driver.createPR(input({ baseBranch: 'main' }))).toEqual({ ok: true, url: 'https://gitlab.com/acme/demo/-/merge_requests/42', dryRun: false, updated: true });
+    expect(glabMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not adopt another fork with the same branch name', async () => {
+    writeFileSync(join(repo, 'a.txt'), 'finished work\n');
+    glabMock.mockImplementation((...args: unknown[]) => {
+      const argv = args[1] as string[];
+      const cb = args.at(-1) as Callback;
+      if (argv[1] === 'create') return cb(new Error('exists'), '', 'MR already exists');
+      return cb(null, JSON.stringify([{ source_branch: 'cez/abc123', target_branch: 'main',
+        source_project_id: 2, target_project_id: 1, state: 'opened',
+        web_url: 'https://gitlab.com/acme/demo/-/merge_requests/42' }]));
+    });
+    const driver = createGitlabDriver(freshRoot(), remoteOf('git@gitlab.com:acme/demo.git'));
+    expect(await driver.createPR(input({ baseBranch: 'main' }))).toEqual({ ok: false, error: 'glab mr create failed — MR already exists' });
+  });
+
+  it('does not guess the existing MR target when the task base is unknown', async () => {
+    glabFails('MR already exists');
+    const driver = createGitlabDriver(freshRoot(), remoteOf('git@gitlab.com:acme/demo.git'));
+    expect(await driver.createPR(input())).toEqual({ ok: false, error: 'glab mr create failed — MR already exists' });
+    expect(glabMock).toHaveBeenCalledTimes(1);
+  });
+
   it('reports any other glab failure with the tail of its stderr', async () => {
     glabFails('some noise\nfailed to create merge request: 409 {message: [Another open merge request already exists for this source branch]}\n');
     const driver = createGitlabDriver(freshRoot(), remoteOf('git@gitlab.com:acme/demo.git'));

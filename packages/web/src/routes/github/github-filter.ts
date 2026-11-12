@@ -17,8 +17,8 @@ export function allLabels(items: readonly GithubItem[]): string[] {
 
 /**
  * Filter by a free-text query and a set of required labels.
- *  - `query`: `#123`/`123` matches the number; anything else is a case-insensitive substring
- *    over the number, title, author and body.
+ *  - `query`: `#123` matches the exact number, `123` matches a numeric substring; other text
+ *    matches a case-insensitive substring over the number, title, author and body.
  *  - `labels`: the item must carry EVERY selected label (AND, like GitHub's label filter).
  */
 export function filterGithubItems(
@@ -32,7 +32,8 @@ export function filterGithubItems(
   return items.filter((item) => {
     if (required.length > 0 && !required.every((label) => item.labels.includes(label))) return false
     if (query === '') return true
-    if (idOnly) return String(item.number).includes(numeric)
+    // A loaded #142 must not suppress the forge lookup for an explicit #14 outside this page.
+    if (idOnly) return query.startsWith('#') ? item.number === Number(numeric) : String(item.number).includes(numeric)
     const haystack = `#${item.number} ${item.title} ${item.author} ${item.body ?? ''}`.toLowerCase()
     return haystack.includes(query)
   })

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { REFERENCE_STATUS_MAX } from '@open-mercato/cezar-contract';
 import {
   createSwrCache,
   deleteKeysWithPrefix,
@@ -41,6 +42,8 @@ import type {
   ForgePrChange,
   ForgePrDiffResult,
   ForgePrStatus,
+  ForgeReferenceStatus,
+  ForgeRefStatusData,
   ForgeSearchData,
   ForgeTimelineEvent,
   ForgeTimelineEventKind,
@@ -60,7 +63,7 @@ import type {
  * adds `searchItems` — the open-only list tier's escape hatch into every state, mirroring GitHub's
  * `searchGithubItems` (#730). Step 3.7 adds `viewUrl` — GitLab's own `/-/` path grammar, based off
  * `gitlabWebBase` (the cached `web_url`, falling back to `origin` + `path`). Step 4.1 adds
- * `createPR` — draft merge requests from the review gate. `refStatus` and the
+ * `createPR` — draft merge requests from the review gate. `refStatus` reads task chip states. The
  * merge-panel capabilities (`prMergeState`, `mergePR`) stay absent for good (spec Non-goals) — the
  * routes already degrade in the payload.
  */
@@ -156,7 +159,7 @@ function glabFailureReason(err: unknown): string {
 async function probeGitlab(repoRoot: string): Promise<ForgeAvailability> {
   let stdout: string;
   try {
-    stdout = await glab(repoRoot, ['repo', 'view', '--output', 'json'], 5_000);
+    stdout = await glab(repoRoot, ['repo', 'view', '--output', 'json'], 30_000);
   } catch (err) {
     return { available: false, reason: isNotFound(err) ? GLAB_NOT_FOUND_REASON : glabFailureReason(err) };
   }
@@ -280,13 +283,11 @@ async function fetchGitlabLabelColors(repoRoot: string): Promise<Record<string, 
   }
 }
 
-/** Same TTL/bound as the detect cache, keyed by `repoRoot` — one cached listing per project, a
- *  cached fetch with a bigger `limit` than asked serves fine (superset), mirroring `fetchGithub`'s
- *  `listCache`. */
-const listCache = new Map<string, { at: number; limit: number; data: ForgeListData }>();
+/** Pages are cached by root, size and both independent cursors/exhausted sides. */
+const listCache = new Map<string, { at: number; data: ForgeListData }>();
 const LIST_CACHE_MAX = 50;
 
-registerProjectCacheEvictor((repoRoot) => listCache.delete(repoRoot));
+registerProjectCacheEvictor((repoRoot) => deleteKeysWithPrefix(listCache, `${repoRoot}\0`));
 
 /** CEZ_DRY_RUN=1 — a small fixed catalog on a demo gitlab.com project, mirroring GitHub's
  *  `mockGithub` so the tab is demoable offline for either forge. */
@@ -335,12 +336,18 @@ async function fetchGitlabList(repoRoot: string, parsed: ParsedRemote, opts?: Fo
   if (process.env.CEZ_DRY_RUN === '1') return mockGitlabList();
   const capped = Math.min(Math.max(opts?.limit ?? 30, 1), GL_MAX_LIMIT);
   const refresh = !!opts?.refresh;
-  const hit = listCache.get(repoRoot);
-  if (!refresh && hit && Date.now() - hit.at < CACHE_MS && hit.limit >= capped) return hit.data;
+  const page = (cursor?: string) => cursor && /^[1-9]\d{0,5}$/.test(cursor) ? Number(cursor) : 1;
+  const issuePage = page(opts?.issuesCursor);
+  const mrPage = page(opts?.prsCursor);
+  // A page cursor only has meaning for its page size; a larger cached page skips rows.
+  const cacheKey = `${repoRoot}\0${issuePage}\0${mrPage}\0${capped}\0${opts?.issuesDone ? 1 : 0}${opts?.prsDone ? 1 : 0}`;
+  const hit = listCache.get(cacheKey);
+  if (!refresh && hit && Date.now() - hit.at < CACHE_MS) return hit.data;
   try {
-    const [issuesOut, prsOut] = await Promise.all([
-      glab(repoRoot, ['issue', 'list', '--output', 'json', '--per-page', String(capped)], 15_000),
-      glab(repoRoot, ['mr', 'list', '--output', 'json', '--per-page', String(capped)], 15_000),
+    const [issuesOut, prsOut, labelColors] = await Promise.all([
+      opts?.issuesDone ? Promise.resolve('[]') : glab(repoRoot, ['issue', 'list', '--output', 'json', '--per-page', String(capped), '--page', String(issuePage)], 30_000),
+      opts?.prsDone ? Promise.resolve('[]') : glab(repoRoot, ['mr', 'list', '--output', 'json', '--per-page', String(capped), '--page', String(mrPage)], 30_000),
+      fetchGitlabLabelColors(repoRoot),
     ]);
     let issueRows: GlIssueRow[];
     try {
@@ -354,17 +361,18 @@ async function fetchGitlabList(repoRoot: string, parsed: ParsedRemote, opts?: Fo
     } catch {
       return { available: false, reason: 'glab mr list returned an unexpected response', issues: [], prs: [] };
     }
-    const labelColors = await fetchGitlabLabelColors(repoRoot);
     const data: ForgeListData = {
       available: true,
       repo: parsed.path,
       syncedAt: new Date().toISOString(),
       issues: issueRows.map((row) => toForgeItem('issue', row)),
       prs: mrRows.map((row) => toForgeItem('pr', row)),
+      issuesNextCursor: issueRows.length === capped ? String(issuePage + 1) : null,
+      prsNextCursor: mrRows.length === capped ? String(mrPage + 1) : null,
       ...(labelColors ? { labelColors } : {}),
     };
-    listCache.delete(repoRoot); // re-insert so this key becomes the newest
-    listCache.set(repoRoot, { at: Date.now(), limit: capped, data });
+    listCache.delete(cacheKey); // re-insert so this key becomes the newest
+    listCache.set(cacheKey, { at: Date.now(), data });
     while (listCache.size > LIST_CACHE_MAX) {
       const oldest = listCache.keys().next();
       if (oldest.done) break;
@@ -519,10 +527,13 @@ async function fetchGitlabResourceEvents<T>(
   endpointBase: string,
   resource: string,
   schema: z.ZodType<T>,
+  deadline: number,
 ): Promise<{ rows: T[]; stoppedShort: boolean }> {
+  const budgetMs = deadline - Date.now();
+  if (budgetMs < TIMELINE_MIN_PAGE_MS) return { rows: [], stoppedShort: true };
   const pages = await fetchBoundedPages(
     (page, timeoutMs) => glab(repoRoot, ['api', `${endpointBase}/${resource}?per_page=${NOTES_PAGE_SIZE}&page=${page}`], timeoutMs),
-    { maxPages: TIMELINE_MAX_PAGES, budgetMs: TIMELINE_BUDGET_MS, minPageMs: TIMELINE_MIN_PAGE_MS, pageSize: NOTES_PAGE_SIZE },
+    { maxPages: TIMELINE_MAX_PAGES, budgetMs, minPageMs: TIMELINE_MIN_PAGE_MS, pageSize: NOTES_PAGE_SIZE },
   );
   return { rows: z.array(schema).parse(pages.rows), stoppedShort: pages.stoppedShort };
 }
@@ -532,6 +543,8 @@ async function fetchGitlabResourceEvents<T>(
  *  eviction: `evictForgeProjectCaches` here uses `deleteKeysWithPrefix` from the start). */
 const commentsCache = new Map<string, { at: number; data: ForgeCommentsData }>();
 const COMMENTS_CACHE_MAX = 50;
+const GL_THREAD_BUDGET_MS = 30_000;
+const pendingComments = new Map<string, Promise<ForgeCommentsData>>();
 
 function cacheComments(key: string, data: ForgeCommentsData): void {
   commentsCache.delete(key); // re-insert so this key becomes the newest
@@ -581,7 +594,16 @@ function mockGitlabComments(kind: 'issue' | 'pr'): ForgeCommentsData {
  *  on `{available: false, reason, comments: []}`; a failure on the label/state event endpoints
  *  degrades to comments-only — same "timeline degraded to comments-only" shape GitHub's driver
  *  answers on its own endpoint failures. */
-async function fetchGitlabComments(
+function fetchGitlabComments(repoRoot: string, parsed: ParsedRemote, kind: 'issue' | 'pr', number: number, refresh = false): Promise<ForgeCommentsData> {
+  const key = `${repoRoot}\0${kind}#${number}`;
+  const active = pendingComments.get(key);
+  if (active) return active;
+  const request = loadGitlabComments(repoRoot, parsed, kind, number, refresh).finally(() => pendingComments.delete(key));
+  pendingComments.set(key, request);
+  return request;
+}
+
+async function loadGitlabComments(
   repoRoot: string,
   parsed: ParsedRemote,
   kind: 'issue' | 'pr',
@@ -594,6 +616,17 @@ async function fetchGitlabComments(
   if (!refresh && hit && Date.now() - hit.at < CACHE_MS) return hit.data;
 
   const endpointBase = `projects/:fullpath/${kind === 'issue' ? 'issues' : 'merge_requests'}/${number}`;
+  // Four bounded reads share one deadline. Serializing the streams used up the notes budget
+  // before timeline/detail could begin on a slower self-managed instance.
+  const deadline = Date.now() + GL_THREAD_BUDGET_MS;
+  const timelinePromise = Promise.all([
+    fetchGitlabResourceEvents(repoRoot, endpointBase, 'resource_label_events', glLabelEventSchema, deadline),
+    fetchGitlabResourceEvents(repoRoot, endpointBase, 'resource_state_events', glStateEventSchema, deadline),
+  ]).catch(() => null);
+  const detailPromise = glab(repoRoot, ['api', endpointBase], Math.max(1, deadline - Date.now()))
+    .then((raw) => z.object({ description: z.string().nullish() }).parse(JSON.parse(raw)))
+    .then((item) => ({ body: (item.description ?? '').slice(0, 1024 * 1024), truncated: (item.description?.length ?? 0) > 1024 * 1024 }))
+    .catch(() => null);
 
   let notesRows: unknown[];
   let notesStoppedShort: boolean;
@@ -605,7 +638,7 @@ async function fetchGitlabComments(
           ['api', `${endpointBase}/notes?per_page=${NOTES_PAGE_SIZE}&sort=asc&order_by=created_at&page=${page}`],
           timeoutMs,
         ),
-      { maxPages: TIMELINE_MAX_PAGES, budgetMs: TIMELINE_BUDGET_MS, minPageMs: TIMELINE_MIN_PAGE_MS, pageSize: NOTES_PAGE_SIZE },
+      { maxPages: TIMELINE_MAX_PAGES, budgetMs: Math.max(1, deadline - Date.now()), minPageMs: TIMELINE_MIN_PAGE_MS, pageSize: NOTES_PAGE_SIZE },
     );
     notesRows = pages.rows;
     notesStoppedShort = pages.stoppedShort;
@@ -637,10 +670,9 @@ async function fetchGitlabComments(
   let eventsTruncated = false;
   let eventsStoppedShort = false;
   try {
-    const [labelEvents, stateEvents] = await Promise.all([
-      fetchGitlabResourceEvents(repoRoot, endpointBase, 'resource_label_events', glLabelEventSchema),
-      fetchGitlabResourceEvents(repoRoot, endpointBase, 'resource_state_events', glStateEventSchema),
-    ]);
+    const timeline = await timelinePromise;
+    if (!timeline) throw new Error('GitLab timeline unavailable');
+    const [labelEvents, stateEvents] = timeline;
     const merged = [
       ...labelEvents.rows.map(toLabelEvent),
       ...stateEvents.rows.map(toStateEvent),
@@ -664,6 +696,11 @@ async function fetchGitlabComments(
     truncated: commentsTruncated || eventsTruncated || notesStoppedShort || eventsStoppedShort || undefined,
   };
   if (events) data.events = events;
+  const detail = await detailPromise;
+  if (detail) {
+    data.detail = { body: detail.body };
+    if (detail.truncated) data.truncated = true;
+  }
   cacheComments(key, data);
   return data;
 }
@@ -684,7 +721,7 @@ type GlMrDetail = z.infer<typeof glMrDetailSchema>;
 
 /** One MR detail call's own ceiling. `listChecks` hands it whatever is left of the fan-out's
  *  shared budget instead, whichever is smaller. */
-const MR_DETAIL_TIMEOUT_MS = 10_000;
+const MR_DETAIL_TIMEOUT_MS = 30_000;
 
 async function fetchGitlabMrDetail(repoRoot: string, iid: number, timeoutMs = MR_DETAIL_TIMEOUT_MS): Promise<GlMrDetail> {
   const out = await glab(repoRoot, ['api', `projects/:fullpath/merge_requests/${iid}`], timeoutMs);
@@ -735,11 +772,9 @@ async function mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) =>
 
 const CHECKS_CONCURRENCY = 5;
 
-/** ONE deadline for the WHOLE checks fan-out — the same budget every other multi-call GitLab path
- *  runs under (`fetchBoundedPages`). Without it, `GH_CHECKS_MAX` (100) per-MR calls each carried
- *  their own ~10 s timeout and nothing shared, so a slow instance could hold `GET /github/checks`
- *  open for minutes and spawn 100 `glab` processes. */
-const CHECKS_BUDGET_MS = TIMELINE_BUDGET_MS;
+/** One deadline bounds the whole fan-out; per-call timeouts alone can take minutes on
+ *  self-managed instances. Thirty seconds also accommodates their slower detail responses. */
+export const GL_CHECKS_BUDGET_MS = 30_000;
 /** Never spawn a detail call that cannot finish — the same reasoning as `TIMELINE_MIN_PAGE_MS`:
  *  a 300 ms timeout throws and is indistinguishable from a real endpoint failure. */
 const CHECKS_MIN_CALL_MS = TIMELINE_MIN_PAGE_MS;
@@ -798,7 +833,7 @@ async function fetchGitlabMrHeadChecks(repoRoot: string, iid: number, sha: strin
  * offline) rather than one MR being unreadable, and answers `{available:false, reason}` instead of
  * a checks map with one silently missing entry.
  *
- * The whole fan-out runs under ONE deadline (`CHECKS_BUDGET_MS`), like every other multi-call
+ * The whole fan-out runs under ONE deadline (`GL_CHECKS_BUDGET_MS`), like every other multi-call
  * GitLab path: once it passes, no further detail call is issued and the glyphs resolved so far are
  * returned. That is not a lie by omission — `ForgeChecksData`'s contract is that a number the
  * forge did not answer for is simply ABSENT, which the rows already render as "nothing is known".
@@ -824,7 +859,7 @@ async function fetchGitlabChecks(repoRoot: string, numbers: number[]): Promise<F
   };
 
   // One deadline for every call below, counted from the same `now` the cache lookup used.
-  const deadline = now + CHECKS_BUDGET_MS;
+  const deadline = now + GL_CHECKS_BUDGET_MS;
   const remaining = (): number => deadline - Date.now();
 
   const [first, ...rest] = misses;
@@ -1118,9 +1153,8 @@ function mockGitlabSearch(kind: 'issue' | 'pr', query: string, limit: number): F
 
 /**
  * Search issues/MRs in ANY state (Step 3.6, mirrors `searchGithubItems`). Unlike GitHub's driver,
- * `glab issue/mr list --search` already covers every state with one call and no separate
- * exact-number lookup is needed — `--search` matches a bare number against the title/description
- * too. `checks: null` on every hit (`toForgeItem`'s `pr` branch, D5) — the search tier does not pay
+ * text search covers every state, but a numeric reference must use the detail API: GitLab's
+ * search matches title/description text, not the project-local issue/MR number. `checks: null` on every hit (`toForgeItem`'s `pr` branch, D5) — the search tier does not pay
  * for CI rollups, same rationale as the list tier since #664. Never throws.
  */
 async function searchGitlabItems(
@@ -1134,6 +1168,20 @@ async function searchGitlabItems(
   const capped = Math.min(Math.max(limit, 1), GH_SEARCH_MAX);
   if (process.env.CEZ_DRY_RUN === '1') return mockGitlabSearch(kind, trimmed, capped);
   const command = kind === 'pr' ? 'mr' : 'issue';
+  const numeric = (kind === 'pr' ? /^[#!]?([1-9]\d*)$/ : /^#?([1-9]\d*)$/).exec(trimmed);
+  const number = numeric ? Number(numeric[1]) : null;
+  if (number !== null && Number.isSafeInteger(number)) {
+    try {
+      const segment = kind === 'pr' ? 'merge_requests' : 'issues';
+      const raw = await glab(repoRoot, ['api', `projects/:fullpath/${segment}/${number}`], MR_DETAIL_TIMEOUT_MS);
+      const value = JSON.parse(raw);
+      const item = kind === 'pr' ? toForgeItem('pr', glMrRowSchema.parse(value)) : toForgeItem('issue', glIssueRowSchema.parse(value));
+      return { available: true, items: [item], truncated: false };
+    } catch (err) {
+      if (isGitlabNotFound(err)) return { available: true, items: [], truncated: false };
+      return { available: false, reason: isNotFound(err) ? GLAB_NOT_FOUND_REASON : glabFailureReason(err), items: [] };
+    }
+  }
   try {
     const out = await glab(
       repoRoot,
@@ -1160,6 +1208,65 @@ async function searchGitlabItems(
     const reason = isNotFound(err) ? GLAB_NOT_FOUND_REASON : glabFailureReason(err);
     return { available: false, reason, items: [] };
   }
+}
+
+// Task reference chips: bounded reads, never permission to merge or proof of test coverage.
+const referenceSchema = z.object({
+  state: z.enum(['opened', 'closed', 'merged', 'locked']),
+  draft: z.boolean().optional(),
+  work_in_progress: z.boolean().optional(),
+  has_conflicts: z.boolean().optional(),
+  detailed_merge_status: z.string().optional(),
+  head_pipeline: z.object({ status: z.string() }).nullish(),
+});
+const refCache = new Map<string, { at: number; data: ForgeRefStatusData }>();
+registerProjectCacheEvictor((root) => deleteKeysWithPrefix(refCache, `${root}\0`));
+
+async function fetchGitlabRefStatus(repoRoot: string, prs: number[], issues: number[]): Promise<ForgeRefStatusData> {
+  const valid = (values: number[]) => [...new Set(values.filter((n) => Number.isSafeInteger(n) && n > 0))].slice(0, REFERENCE_STATUS_MAX);
+  const targets = [...valid(prs).map((number) => ({ kind: 'pr' as const, number })),
+    ...valid(issues).map((number) => ({ kind: 'issue' as const, number }))].slice(0, REFERENCE_STATUS_MAX);
+  const key = `${repoRoot}\0${JSON.stringify(targets)}`;
+  const cached = refCache.get(key);
+  if (cached && Date.now() - cached.at < CACHE_MS) return cached.data;
+  const data: Extract<ForgeRefStatusData, { available: true }> = {
+    available: true, prs: {}, issues: {}, conflicts: [], recheckAfterMs: null,
+  };
+  if (process.env.CEZ_DRY_RUN === '1') {
+    for (const target of targets) data[target.kind === 'pr' ? 'prs' : 'issues'][target.number] = 'open';
+    return data;
+  }
+  const deadline = Date.now() + GL_CHECKS_BUDGET_MS;
+  let failure: string | null = null;
+  await mapWithConcurrency(targets, CHECKS_CONCURRENCY, async ({ kind, number }) => {
+    if (failure) return;
+    const remaining = deadline - Date.now();
+    if (remaining < CHECKS_MIN_CALL_MS) { failure = 'GitLab reference status timed out'; return; }
+    try {
+      const segment = kind === 'pr' ? 'merge_requests' : 'issues';
+      const raw = await glab(repoRoot, ['api', `projects/:fullpath/${segment}/${number}`], Math.min(remaining, MR_DETAIL_TIMEOUT_MS));
+      const item = referenceSchema.parse(JSON.parse(raw));
+      let status: ForgeReferenceStatus = item.state === 'merged' ? 'merged' : item.state === 'closed' ? 'closed' : 'open';
+      if (kind === 'pr' && item.state === 'opened') {
+        const checks = pipelineGlyph(item.head_pipeline?.status);
+        if (item.draft || item.work_in_progress) status = 'draft';
+        else if (checks === 'pending') status = 'checks-pending';
+        else if (checks === 'failing') status = 'checks-failing';
+        else if (item.detailed_merge_status === 'not_approved') status = 'review-required';
+        // A green aggregate cannot establish approvals or required gates; keep unknown readiness open.
+        if (item.has_conflicts) data.conflicts!.push(number);
+      }
+      data[kind === 'pr' ? 'prs' : 'issues'][number] = status;
+      if (status !== 'merged') data.recheckAfterMs = CACHE_MS;
+    } catch (err) {
+      // Missing references are omitted; other failures must not masquerade as missing items.
+      if (!isGitlabNotFound(err)) failure = isNotFound(err) ? GLAB_NOT_FOUND_REASON : glabFailureReason(err);
+    }
+  });
+  if (failure) return { available: false, reason: failure, recheckAfterMs: CACHE_MS };
+  refCache.set(key, { at: Date.now(), data });
+  while (refCache.size > 100) refCache.delete(refCache.keys().next().value!);
+  return data;
 }
 
 // ---- draft merge request creation (review gate, Step 4.1) --------------------
@@ -1192,6 +1299,23 @@ function gitlabWebHost(repoRoot: string, parsed: ParsedRemote): string {
   return parsed.host;
 }
 
+async function existingGitlabMr(worktree: string, branch: string, base: string | null, expectedBase: string): Promise<string | null> {
+  // With an unknown/default target, a same-source MR could target a different release branch.
+  if (!base) return null;
+  const result = await execTool(['mr', 'list', '--source-branch', branch, '--output', 'json'], worktree, 'glab', MR_DETAIL_TIMEOUT_MS);
+  if (!result.ok) return null;
+  try {
+    const rows = z.array(z.object({
+      source_branch: z.string(), target_branch: z.string(), source_project_id: z.number(), target_project_id: z.number(),
+      web_url: z.string().url(), state: z.string(),
+    })).parse(JSON.parse(result.stdout));
+    const matches = rows.filter((mr) => mr.state === 'opened' && mr.source_branch === branch &&
+      mr.target_branch === base && mr.source_project_id === mr.target_project_id &&
+      mr.web_url.startsWith(`${expectedBase}/-/merge_requests/`) && /\/merge_requests\/\d+$/.test(mr.web_url));
+    return matches.length === 1 ? matches[0]!.web_url : null;
+  } catch { return null; }
+}
+
 async function createGitlabDraftMr(repoRoot: string, parsed: ParsedRemote, input: DraftPrInput): Promise<DraftPrOutcome> {
   const prelude = await preparePublish(input);
   if (prelude.kind === 'error') return { ok: false, error: prelude.error };
@@ -1222,6 +1346,11 @@ async function createGitlabDraftMr(repoRoot: string, parsed: ParsedRemote, input
         error: `glab is not authenticated for ${host} — run \`glab auth login --hostname ${host}\`, or merge the branch locally`,
       };
     }
+    // Creation can have succeeded before a timeout, or a continued task can already have an MR.
+    // Adopt only one exact same-project source/target match; never repeat the mutation blindly.
+    const webBase = gitlabWebBase(repoRoot, parsed);
+    const existing = webBase ? await existingGitlabMr(worktree, branch, base, webBase) : null;
+    if (existing) return { ok: true, url: existing, dryRun: false, updated: true };
     return { ok: false, error: `glab mr create failed — ${glabBoxedError(mr.stderr) ?? (tail(mr.stderr) || 'unknown error')}` };
   }
 
@@ -1251,6 +1380,8 @@ export function createGitlabDriver(repoRoot: string, parsed: ParsedRemote): Forg
 
     // Lazy CI glyphs for on-screen MR rows (#664 parity) — byte-identical shape to GitHub's.
     listChecks: (numbers) => fetchGitlabChecks(repoRoot, numbers),
+
+    refStatus: (prs, issues) => fetchGitlabRefStatus(repoRoot, prs, issues),
 
     // The wait-for-CI node's verdict for one exact MR head (#1533 parity).
     headChecks: (number, sha) => fetchGitlabMrHeadChecks(repoRoot, number, sha),

@@ -35,6 +35,12 @@ describe('filterGithubItems', () => {
     expect(filterGithubItems(items, { query: '13' }).map((i) => i.number)).toEqual([139, 135])
   })
 
+  it('treats explicit #id as exact so a longer loaded number cannot hide a remote issue', () => {
+    expect(filterGithubItems(items, { query: '#14' })).toEqual([])
+    expect(shouldSearchForge('#14', filterGithubItems(items, { query: '#14' }).length)).toBe(true)
+    expect(filterGithubItems([...items, item({ number: 14, title: 'Earlier feedback' })], { query: ' #14 ' }).map((row) => row.number)).toEqual([14])
+  })
+
   it('matches free text across title, author and body (case-insensitive)', () => {
     expect(filterGithubItems(items, { query: 'login' }).map((i) => i.number)).toEqual([142])
     expect(filterGithubItems(items, { query: 'ALICE' }).map((i) => i.number)).toEqual([142])

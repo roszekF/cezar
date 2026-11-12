@@ -1,9 +1,11 @@
 import { memo, useEffect, useMemo, type ReactNode } from 'react'
-import { useLocation } from 'react-router'
+import { matchPath, useLocation } from 'react-router'
 
+import { useManagers } from '@/api/managers'
+import { managersAttention } from '@/lib/managers'
 import { useForgeKind, useHealth, useProjectRuns, useProjects, useRunsForProject, useSkillsUpdate, useStarCount, useTodos, useWorkspaceConfig } from '@/api/queries'
 import type { HealthResponse, SkillsUpdateState } from '@open-mercato/cezar-api-client'
-import { AppShell, type RepoChip } from '@/components/app-shell'
+import { AppShell, type ProjectSwitcher, type RepoChip } from '@/components/app-shell'
 import { CommandPalette } from '@/components/command-palette'
 import { TaskPalette } from '@/components/task-palette/task-palette'
 import { ListViewProvider } from '@/components/list-view'
@@ -14,6 +16,7 @@ import { TelemetryConsentBanner } from '@/components/telemetry-consent'
 import { ProjectGroups } from '@/components/project-groups'
 import { TaskQuickListContainer } from '@/components/task-quick-list'
 import { ToolsMenu } from '@/components/tools-menu'
+import { ManagerRail, ManagerSidebar } from '@/routes/manager/manager-sidebar'
 import { forgeLabel } from '@/lib/forge-display'
 import { useDocumentTitle } from '@/lib/use-document-title'
 import { stripProjectPrefix, useActiveProjectId } from '@/lib/project-router'
@@ -23,7 +26,10 @@ import { useFeatureNews, WhatsNewNavItem } from '@/components/first-run'
 import { TaskSwitchShortcut } from '@/lib/use-task-switch-shortcut'
 import { unreadDoneCount } from '@/lib/read-state'
 import { runTitle } from '@/lib/task-groups'
-import { pageTitleContext } from '@/routes'
+import { managerHref, rememberManagerLocation } from '@/components/mode-switch'
+import { isManagerPathname } from '@/lib/managers'
+import { useManagerModeTelemetry } from '@/lib/manager-telemetry'
+import { pageTitleContext, preloadManagerRoutes } from '@/routes'
 
 /**
  * Derive the sidebar's repo chip from `/api/health`.
@@ -63,7 +69,7 @@ export function skillsUpdateMarkerOf(state: SkillsUpdateState | undefined): bool
  * reconcile — not a change here.
  */
 export const AppShellContainer = memo(function AppShellContainer({ children }: { children: ReactNode }) {
-  const { pathname } = useLocation()
+  const { pathname, search } = useLocation()
   const projectId = useActiveProjectId()
   const health = useHealth()
   const workspaceConfig = useWorkspaceConfig()
@@ -79,6 +85,28 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
   // it the nav must not offer a tab whose every request would 409.
   const automationsAvailable = health.data?.capabilities.automations === true
   const todos = useTodos(inboxAvailable)
+  // Mounted for the session: the switch's dot and the notification path read this cache in Code
+  // mode too, and the workspace stream keeps it current.
+  const managersAvailable = health.data?.capabilities.managers === true
+  const managers = useManagers(managersAvailable)
+  const inManager = managersAvailable && isManagerPathname(pathname)
+  useManagerModeTelemetry(inManager)
+  useEffect(() => {
+    if (inManager) rememberManagerLocation(`${pathname}${search}`)
+  }, [inManager, pathname, search])
+  // The first switch to Manager used to wait on three chunks in a row (~800ms); fetch them idle.
+  useEffect(() => {
+    if (!managersAvailable) return
+    const idle = window.requestIdleCallback ?? ((run: () => void) => window.setTimeout(run, 1))
+    const cancel = window.cancelIdleCallback ?? window.clearTimeout
+    const handle = idle(() => preloadManagerRoutes())
+    return () => cancel(handle)
+  }, [managersAvailable])
+  const managerIds = useMemo(() => managers.data?.managers.map((manager) => manager.id), [managers.data])
+  // Read during render on purpose: the effect above has stored the location by the time it matters.
+  const managerTo = inManager ? '/manager' : managerHref(managerIds)
+  const chatId = inManager ? matchPath('/manager/:id', pathname)?.params.id : undefined
+  const chatName = chatId === undefined ? undefined : managers.data?.managers.find((manager) => manager.id === chatId)?.name
   // One query in the shell feeds every rendering of the active project's navigation (desktop,
   // mobile drawer, and grouped sidebar). Routes reuse this TanStack Query cache entry.
   const skillsUpdate = useSkillsUpdate(projectId ?? '', projectId !== null)
@@ -124,13 +152,11 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
   const globalSettings = pathname === '/settings/global' || pathname.startsWith('/settings/global/')
   const projectName = globalSettings
     ? null
-    : (activeProject?.name ??
+    : (chatName ?? activeProject?.name ??
       (isBootProject ? (repoChipOf(health.data)?.name ?? null) : null))
   // The VIEWED project's own forge (spec 2026-08-10, Step 3.8-review-fix-2) — the same registry
   // field the multi-project sidebar's per-group nav reads (`ProjectGroups`), so the document
   // title of a GitLab project scoped under a GitHub boot project no longer says "GitHub".
-  // `forgeAvailable` below stays health-level (R6 Step 1.1): that mismatch is older and the
-  // per-group nav already gates on each entry's own `forge`.
   const forgeKind = useForgeKind()
   const pageLabel = titleLabel ?? (titleContext.pageLabel === 'GitHub' ? forgeLabel(forgeKind) : titleContext.pageLabel)
 
@@ -146,6 +172,18 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
     () => repoChipOf(health.data),
     [health.data?.repo?.root, health.data?.repo?.branch],
   )
+  // The rail-mode header's switcher: every registered project, the URL's one selected.
+  const projectSwitcher = useMemo<ProjectSwitcher | null>(
+    () =>
+      globalSettings
+        ? null
+        : {
+            activeId: projectId ?? bootProjectId,
+            activeName: projectName,
+            projects: (registry?.projects ?? []).map(({ id, name }) => ({ id, name })),
+          },
+    [globalSettings, projectId, bootProjectId, projectName, registry?.projects],
+  )
   const banner = useMemo(() => <ProviderBannerContainer />, [])
   // The opt-in ask (docs/telemetry.md): renders nothing once this machine has answered.
   const footerBanner = useMemo(() => <TelemetryConsentBanner />, [])
@@ -156,6 +194,8 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
   // ever pays for a sample it cannot show.
   const hostWidget = useMemo(() => <HostUsageWidget />, [])
   const whatsNew = useMemo(() => <WhatsNewNavItem />, [])
+  const managerSidebar = useMemo(() => <ManagerSidebar />, [])
+  const managerRail = useMemo(() => <ManagerRail />, [])
   const projectGroups = useMemo(
     () =>
       projects ? (
@@ -186,14 +226,10 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
   const toolsMenu = useMemo(() => <ToolsMenu health={health.data} forge={activeForge} />, [health.data, activeForge])
 
   return (
-    // The viewed project's forge, for every reference chip under the shell (Step 5.10). Here
-    // because this node already reads `useForgeKind()` for the title above and has both the
-    // sidebar and the routed views under it — a routed view subscribing to the registry on its
-    // own destabilizes the scope resolution the router does above it (`ForgeScopeContext`).
     <ReferenceForgeScope forge={forgeKind}>
       {/* The Active/Archived filter is shared by the quick-list below and the Tasks table (Step 3.4),
-          which renders in `children`. The provider goes here because this is the lowest node that has
-          both of them under it — the spec requires the two sets of tabs to be one filter. */}
+         which renders in `children`. The provider goes here because this is the lowest node that has
+         both of them under it — the spec requires the two sets of tabs to be one filter. */}
       <ListViewProvider>
         <AppShell
           repo={repo}
@@ -216,7 +252,6 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
           // Shown whenever the remote is a recognized forge, like each project group's tab (#698);
           // a cold or failed probe is the GitHub page's to explain and retry (#1412).
           forgeAvailable={activeForge != null}
-          // Same source as the title above — the viewed project's kind, read from the URL (`useForgeKind`).
           forgeKind={forgeKind}
           // Hidden unless health reports the opt-in inbox (#471) — same honesty rule as above:
           // the nav must not offer an Inbox this server will never fill.
@@ -234,6 +269,12 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
           // quick-list above whenever this slot is absent.
           projectGroups={projectGroups}
           toolsMenu={toolsMenu}
+          managersAvailable={managersAvailable}
+          managerAttention={managersAttention(managers.data?.managers)}
+          managerTo={managerTo}
+          managerSidebar={managerSidebar}
+          managerRail={managerRail}
+          projectSwitcher={projectSwitcher}
         >
           {children}
         </AppShell>

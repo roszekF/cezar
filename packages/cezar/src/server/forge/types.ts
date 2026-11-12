@@ -329,7 +329,7 @@ export type ForgeRefStatusData =
   | { available: false; reason: string; recheckAfterMs: number | null };
 
 export type DraftPrOutcome =
-  | { ok: true; url: string; dryRun: boolean }
+  | { ok: true; url: string; dryRun: boolean; /** the branch already had an open PR; the push updated it */ updated?: boolean }
   | { ok: false; error: string };
 
 export interface DraftPrInput {

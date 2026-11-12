@@ -87,7 +87,13 @@ import {
   type ListView,
   type SortBy,
 } from '@/lib/task-groups'
-import { TASK_ORIGIN_OPTIONS, useTaskOrigin, type TaskOrigin } from '@/lib/task-origin'
+import {
+  TASK_ORIGIN_OPTIONS,
+  automationFacetLabel,
+  recordedAutomationNames,
+  useTaskOrigin,
+  type TaskOrigin,
+} from '@/lib/task-origin'
 import { dispatchKindLabel, subtaskLabel, taskTreeRows } from '@/lib/task-tree'
 import {
   compareGroups,
@@ -534,7 +540,7 @@ export function TasksOverview({
         to="/new"
         data-slot="new-task-fab"
         aria-label="New task"
-        className="fixed right-4 bottom-[calc(16px+env(safe-area-inset-bottom))] z-20 inline-flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-modal md:hidden"
+        className="fixed right-4 bottom-[calc(16px+var(--phone-bar,0px)+env(safe-area-inset-bottom))] z-20 inline-flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-modal md:hidden"
       >
         <PlusIcon className="size-[22px]" aria-hidden="true" />
       </Link>
@@ -745,6 +751,7 @@ function TasksFilterBar({
   const workflowCounts = countsOf('workflows')
   const automationCounts = countsOf('automations')
   const automationIds = distinctValues(inView.map((run) => automations.get(run.id)))
+  const recordedNames = React.useMemo(() => recordedAutomationNames(runs), [runs])
   const toggle = (facet: TaskFacetId, value: string) =>
     onFiltersChange((current) => ({
       ...current,
@@ -800,7 +807,7 @@ function TasksFilterBar({
           onClear={() => clear('automations')}
           options={automationIds.map((id) => ({
             value: id,
-            label: automationNames?.get(id) ?? id,
+            label: automationFacetLabel(id, automationNames, recordedNames),
             count: automationCounts.get(id) ?? 0,
           }))}
           emptyLabel="No automation tasks"
@@ -1681,8 +1688,12 @@ export function TasksOverviewRoute() {
   const automationsQuery = useAutomationsQuery(
     gate.known && !gate.off && ((hasAutomationRuns && origin !== 'regular') || (scheduledGate && view === 'active')),
   )
+  // Undefined until the definitions arrive, so a deleted automation is not guessed at (#2100).
   const automationNames = React.useMemo(
-    () => new Map((automationsQuery.data?.automations ?? []).map((entry) => [entry.id, entry.name])),
+    () =>
+      automationsQuery.data
+        ? new Map(automationsQuery.data.automations.map((entry) => [entry.id, entry.name]))
+        : undefined,
     [automationsQuery.data],
   )
   // Chip statuses are hydrated HERE rather than inside `TasksOverview`, which is a pure

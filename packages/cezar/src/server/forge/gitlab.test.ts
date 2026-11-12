@@ -16,6 +16,7 @@ import { parseRemote, type ParsedRemote } from './index.ts';
 import { FORGE_PR_DIFF_FILE_CAP, FORGE_PR_PATCH_CAP } from './limits.ts';
 import {
   GLAB_NOT_FOUND_REASON,
+  GL_CHECKS_BUDGET_MS,
   createGitlabDriver,
   detectGitlabCached,
   gitlabProjectPath,
@@ -86,7 +87,7 @@ describe('GitLab driver — detect', () => {
     expect(bin).toBe('glab');
     expect(args).toEqual(['repo', 'view', '--output', 'json']);
     expect(opts.cwd).toBe(root);
-    expect(opts.timeout).toBe(5_000);
+    expect(opts.timeout).toBe(30_000);
   });
 
   it('caches the project web_url and path_with_namespace per root on success', async () => {
@@ -227,9 +228,9 @@ describe('GitLab driver — skeleton members (later steps implement them)', () =
   it('leaves the optional capabilities absent, so the routes degrade in the payload', () => {
     const driver = createGitlabDriver(freshRoot(), parsed());
     // listAll (3.2), listComments (3.3), listChecks (3.4), prDiff (3.5) and searchItems (3.6) are
-    // now implemented — refStatus stays absent for good (spec Non-goals); prMergeState/mergePR are
+    // now implemented, including reference statuses; prMergeState/mergePR are
     // out of scope for this run entirely.
-    expect(driver.refStatus).toBeUndefined();
+    expect(driver.refStatus).toBeTypeOf('function');
     expect(driver.prMergeState).toBeUndefined();
     expect(driver.mergePR).toBeUndefined();
   });
@@ -435,6 +436,8 @@ describe('GitLab driver — listIssues / listPRs / listAll', () => {
       syncedAt: expect.any(String),
       issues: ISSUES_ITEMS,
       prs: MRS_ITEMS,
+      issuesNextCursor: null,
+      prsNextCursor: null,
       labelColors: { 'type::bug': 'd73a4a', 'type::maintenance': '6699cc' },
     });
   });
@@ -448,6 +451,8 @@ describe('GitLab driver — listIssues / listPRs / listAll', () => {
       syncedAt: expect.any(String),
       issues: [],
       prs: [],
+      issuesNextCursor: null,
+      prsNextCursor: null,
       labelColors: {},
     });
   });
@@ -458,8 +463,24 @@ describe('GitLab driver — listIssues / listPRs / listAll', () => {
     await driver.listAll!({ limit: 5_000 });
     const issueCall = execFileMock.mock.calls.find((c) => (c[1] as string[])[0] === 'issue');
     const mrCall = execFileMock.mock.calls.find((c) => (c[1] as string[])[0] === 'mr');
-    expect(issueCall?.[1]).toEqual(['issue', 'list', '--output', 'json', '--per-page', '100']);
-    expect(mrCall?.[1]).toEqual(['mr', 'list', '--output', 'json', '--per-page', '100']);
+    expect(issueCall?.[1]).toEqual(['issue', 'list', '--output', 'json', '--per-page', '100', '--page', '1']);
+    expect(mrCall?.[1]).toEqual(['mr', 'list', '--output', 'json', '--per-page', '100', '--page', '1']);
+  });
+
+  it('keeps independent page cursors and does not restart an exhausted side', async () => {
+    routeGlab({ issue: ISSUES_JSON, mr: '[]', api: '[]' });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const first = await driver.listAll!({ limit: 2 });
+    expect(first.issuesNextCursor).toBe('2');
+    expect(first.prsNextCursor).toBeNull();
+    execFileMock.mockClear();
+    const second = await driver.listAll!({ limit: 2, issuesCursor: '2', prsDone: true });
+    expect(second.issuesNextCursor).toBe('3');
+    expect(second.prs).toEqual([]);
+    expect(execFileMock.mock.calls.some((c) => (c[1] as string[])[0] === 'mr')).toBe(false);
+    const issueCall = execFileMock.mock.calls.find((c) => (c[1] as string[])[0] === 'issue');
+    expect(issueCall?.[1]).toContain('2');
+    expect((issueCall?.[1] as string[]).slice(-2)).toEqual(['--page', '2']);
   });
 
   it('a malformed issue list answers unavailable with a clear reason', async () => {
@@ -651,6 +672,40 @@ describe('GitLab driver — listComments with timeline events', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it('loads a slow self-managed thread within one deadline and coalesces concurrent readers', async () => {
+    vi.useFakeTimers();
+    try {
+      execFileMock.mockImplementation((...args: unknown[]) => {
+        const endpoint = (args[1] as string[])[1]!;
+        const timeout = (args[2] as { timeout: number }).timeout;
+        const callback = args.at(-1) as Callback;
+        setTimeout(() => {
+          if (timeout < 20_000) callback(new Error('request timed out'));
+          else callback(null, { stdout: JSON.stringify(endpoint.endsWith('/14') ? { description: 'full detail' } : []), stderr: '' });
+        }, Math.min(timeout, 20_000));
+      });
+      const driver = createGitlabDriver(freshRoot(), parsed());
+      const first = driver.listComments!('issue', 14);
+      const second = driver.listComments!('issue', 14);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(await first).toMatchObject({ available: true, comments: [], events: [], detail: { body: 'full detail' } });
+      expect(await second).toEqual(await first);
+      expect(execFileMock).toHaveBeenCalledTimes(4);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('loads the full detail description beyond the list preview cap', async () => {
+    const body = 'a'.repeat(9000) + '\n![screenshot](/uploads/secret/screenshot.png)';
+    execFileMock.mockImplementation((...args: unknown[]) => {
+      const endpoint = (args[1] as string[])[1]!;
+      (args.at(-1) as Callback)(null, { stdout: JSON.stringify(endpoint === 'projects/:fullpath/issues/7' ? { description: body } : []), stderr: '' });
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.listComments!('issue', 7);
+    expect(data.detail?.body).toBe(body);
+    expect(data.truncated).not.toBe(true);
   });
 
   it('maps a user note to the exact ForgeComment, MR url grammar', async () => {
@@ -1044,7 +1099,7 @@ describe('GitLab driver — listChecks', () => {
       expect(execFileMock.mock.calls.length).toBe(resolved.length);
       // And the whole fan-out fits the budget, give or take the call that was in flight when it ran
       // out — never `numbers.length * 10 s`.
-      expect(Date.now()).toBeLessThanOrEqual(TIMELINE_BUDGET_MS + perCall);
+      expect(Date.now()).toBeLessThanOrEqual(GL_CHECKS_BUDGET_MS + perCall);
     });
 
     it('hands each call the smaller of its own ceiling and what is left of the budget', async () => {
@@ -1055,7 +1110,7 @@ describe('GitLab driver — listChecks', () => {
       expect(timeouts.length).toBeGreaterThan(1);
       for (const timeout of timeouts) {
         expect(timeout).toBeGreaterThanOrEqual(TIMELINE_MIN_PAGE_MS);
-        expect(timeout).toBeLessThanOrEqual(10_000); // MR_DETAIL_TIMEOUT_MS, the per-call ceiling
+        expect(timeout).toBeLessThanOrEqual(30_000); // MR_DETAIL_TIMEOUT_MS, the per-call ceiling
       }
       // Monotonically non-increasing: every call shares one shrinking budget.
       expect([...timeouts].sort((a: number, b: number) => b - a)).toEqual(timeouts);
@@ -1521,6 +1576,32 @@ describe('GitLab driver — searchItems', () => {
     expect(call?.[1]).toEqual(['issue', 'list', '--search', 'publish', '--all', '--output', 'json', '--per-page', String(GH_SEARCH_MAX)]);
   });
 
+  it.each(['#14', '14'])('resolves exact issue %s by IID instead of description text', async (query) => {
+    const issue = { ...JSON.parse(ISSUES_JSON)[0], iid: 14, title: 'Old issue outside the first list page' };
+    routeGlab({ api: JSON.stringify(issue), issue: '[]' });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const data = await driver.searchItems!('issue', query, {});
+    expect(data.available).toBe(true);
+    expect(data.items.map((item) => item.number)).toEqual([14]);
+    expect(execFileMock.mock.calls[0]?.[1]).toEqual(['api', 'projects/:fullpath/issues/14']);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves an exact MR using its separate IID namespace', async () => {
+    routeGlab({ api: JSON.stringify({ ...JSON.parse(MRS_JSON)[0], iid: 14 }) });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect((await driver.searchItems!('pr', '#14', {})).items[0]?.number).toBe(14);
+    expect(execFileMock.mock.calls[0]?.[1]).toEqual(['api', 'projects/:fullpath/merge_requests/14']);
+  });
+
+  it('an exact missing issue answers empty, while authorization errors remain unavailable', async () => {
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    routeGlab({ api: { fail: 'HTTP 404 Not Found' } });
+    expect(await driver.searchItems!('issue', '#14', {})).toEqual({ available: true, items: [], truncated: false });
+    routeGlab({ api: { fail: 'HTTP 403 Forbidden' } });
+    expect((await driver.searchItems!('issue', '#14', {})).available).toBe(false);
+  });
+
   it('maps fixture MR hits to the exact ForgeItem[]', async () => {
     routeGlab({ mr: MRS_JSON, api: LABELS_JSON });
     const driver = createGitlabDriver(freshRoot(), parsed());
@@ -1665,5 +1746,43 @@ describe('GitLab driver — viewUrl', () => {
   it('answers null when neither the cache nor a parsed origin/path is known', () => {
     const driver = createGitlabDriver(freshRoot(), { host: 'x', owner: 'x', repo: 'x', path: '', origin: '' });
     expect(driver.viewUrl('repo', 'x')).toBeNull();
+  });
+});
+
+
+describe('GitLab reference status', () => {
+  beforeEach(() => { vi.stubEnv('CEZ_DRY_RUN', ''); execFileMock.mockReset(); });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('distinguishes merged, closed, pending and unproven readiness without extra model calls', async () => {
+    const responses: Record<string, unknown> = {
+      'merge_requests/1': { state: 'merged' },
+      'merge_requests/2': { state: 'opened', head_pipeline: { status: 'running' }, has_conflicts: true },
+      'merge_requests/3': { state: 'opened', head_pipeline: { status: 'success' } },
+      'issues/4': { state: 'closed' },
+    };
+    execFileMock.mockImplementation((...args: unknown[]) => {
+      const endpoint = (args[1] as string[])[1]!.replace('projects/:fullpath/', '');
+      (args.at(-1) as Callback)(null, { stdout: JSON.stringify(responses[endpoint]), stderr: '' });
+    });
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    const first = await driver.refStatus!([1, 2, 3, 1], [4]);
+    expect(first).toEqual({ available: true, prs: { 1: 'merged', 2: 'checks-pending', 3: 'open' },
+      issues: { 4: 'closed' }, conflicts: [2], recheckAfterMs: 60_000 });
+    expect(execFileMock).toHaveBeenCalledTimes(4);
+    expect(await driver.refStatus!([1, 2, 3, 1], [4])).toEqual(first);
+    expect(execFileMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('never presents inaccessible references as missing', async () => {
+    reply((cb) => cb(Object.assign(new Error('denied'), { stderr: 'HTTP 403 Forbidden' })));
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.refStatus!([1], [])).toEqual({ available: false, reason: 'HTTP 403 Forbidden', recheckAfterMs: 60_000 });
+  });
+
+  it('does not schedule rechecks for an immutable merged MR', async () => {
+    glabOk(JSON.stringify({ state: 'merged' }));
+    const driver = createGitlabDriver(freshRoot(), parsed());
+    expect(await driver.refStatus!([1], [])).toEqual({ available: true, prs: { 1: 'merged' }, issues: {}, conflicts: [], recheckAfterMs: null });
   });
 });

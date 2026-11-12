@@ -26,3 +26,13 @@ Project → GitHub
 3. Read the details or use Hand this to the agent.
 
 > **Good to know**: Access depends on gh configuration, the repository, and permissions. Merging requires a separate action and confirmation.
+
+## GitLab projects
+
+A project hosted on GitLab shows **GitLab** in place of **GitHub** when `glab` is installed and authenticated. Self-managed hosts are discovered from your global `glab` configuration, including a custom HTTPS port.
+
+You can browse issues and merge requests, open an item linked from a task even when it is outside the loaded list, and read the full discussion. Private PNG, JPEG, GIF, WebP and AVIF uploads in the current project render through the authenticated project endpoint. Each image is limited to 5 MiB; redirects and uploads from another project are refused. The loader uses your global `glab` HTTPS API host and configured CA certificate.
+
+Task reference chips show the issue or merge request state. Draft merge requests reuse an existing open merge request for the same source and target branches.
+
+> **Good to know**: GitLab merging from the cockpit, GitLab issue-triggered automations and GitLab installations under a URL sub-path remain unsupported. Use GitLab for merge actions.

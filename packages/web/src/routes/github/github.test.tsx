@@ -568,6 +568,72 @@ describe('the GitHub tab lists', () => {
     expect(document.querySelector('[data-slot="gh-body"]')?.textContent).toContain('(no description)')
   })
 
+  it('looks up a directly linked GitLab issue outside the loaded page and preserves its labels', async () => {
+    const old = { ...ISSUE_142, number: 3, title: 'Earlier feedback', labels: ['testflight'], url: 'https://gitlab.example.test/group/demo/-/issues/3' }
+    const sent = stubFetch({
+      'GET /api/v1/health': () => jsonResponse({ ...health(['claude']), forge: { kind: 'gitlab', available: true } }),
+      'GET /api/v1/github/search?kind=issue&q=%233': () => jsonResponse({ available: true, items: [old], labelColors: { testflight: 'ff0000' } }),
+    })
+    renderAt('/github/issues/3')
+    await waitFor(() => expect(detail()?.textContent).toContain('Earlier feedback'))
+    expect(detail()?.textContent).toContain('testflight')
+    expect(sent.filter((r) => r.path === '/api/v1/github/search?kind=issue&q=%233')).toHaveLength(1)
+    expect(sent.some((r) => r.path.includes('issuesCursor='))).toBe(false)
+
+    fireEvent.change(document.querySelector('[data-slot="gh-search"]')!, { target: { value: 'unrelated query' } })
+    fireEvent.click(document.querySelector<HTMLElement>('[data-slot="gh-label-filter"]')!)
+    const bug = await screen.findByRole('option', { name: 'bug' })
+    fireEvent.click(bug)
+    await waitFor(() => expect(sent.some((r) => r.path.includes('/github/search?kind=issue&q=unrelated'))).toBe(true), { timeout: 3000 })
+    expect(detail()?.textContent).toContain('Earlier feedback')
+    expect(detail()?.textContent).toContain('testflight')
+  })
+
+  it('refreshes labels on a directly linked issue without changing search or selection', async () => {
+    let labels = ['feedback::uploaded']
+    const sent = stubFetch({
+      'GET /api/v1/github/search?kind=issue&q=%233': () => jsonResponse({ available: true, items: [{ ...ISSUE_142, number: 3, title: 'Earlier feedback', url: 'https://gitlab.example.test/group/demo/-/issues/3', labels }] }),
+    })
+    renderAt('/github/issues/3')
+    await waitFor(() => expect(detail()?.textContent).toContain('feedback::uploaded'))
+    const search = document.querySelector<HTMLInputElement>('[data-slot="gh-search"]')!
+    fireEvent.change(search, { target: { value: 'login' } })
+    labels = ['feedback::available']
+    fireEvent.click(document.querySelector<HTMLElement>('[data-slot="gh-refresh"]')!)
+    await waitFor(() => expect(detail()?.textContent).toContain('feedback::available'))
+    expect(detail()?.textContent).not.toContain('feedback::uploaded')
+    expect(detail()?.textContent).toContain('Earlier feedback')
+    expect(search.value).toBe('login')
+    expect(sent.filter((r) => r.path === '/api/v1/github/search?kind=issue&q=%233')).toHaveLength(2)
+  })
+
+  it('looks up a directly linked merge request outside the loaded page', async () => {
+    const old = { ...PR_137, number: 3, title: 'Earlier merge request', url: 'https://gitlab.example.test/group/demo/-/merge_requests/3' }
+    stubFetch({
+      'GET /api/v1/github/search?kind=pr&q=%233': () => jsonResponse({ available: true, items: [old] }),
+    })
+    renderAt('/github/prs/3')
+    await waitFor(() => expect(detail()?.textContent).toContain('Earlier merge request'))
+  })
+
+  it('shows a loading state while a directly linked item is being looked up', async () => {
+    stubFetch({ 'GET /api/v1/github/search?kind=issue&q=%233': () => new Promise<Response>(() => {}) })
+    renderAt('/github/issues/3')
+    await screen.findByRole('heading', { name: 'Loading issue #3…' })
+    expect(screen.queryByRole('heading', { name: 'Not found' })).toBeNull()
+  })
+
+  it.each([
+    ['in-payload failure', () => jsonResponse({ available: false, reason: 'GitLab is unavailable', items: [] })],
+    ['HTTP failure', () => jsonResponse({ error: 'Network unavailable' }, 503)],
+  ])('does not call a direct lookup %s not found', async (_name, response) => {
+    stubFetch({ 'GET /api/v1/github/search?kind=issue&q=%233': response })
+    renderAt('/github/issues/3')
+    await screen.findByRole('heading', { name: 'Could not load issue #3' }, { timeout: 4000 })
+    expect(screen.queryByRole('heading', { name: 'Not found' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+  })
+
   it('an unknown number renders the honest not-found state, not a crash', async () => {
     stubFetch()
     renderAt('/github/issues/9999')
@@ -575,10 +641,8 @@ describe('the GitHub tab lists', () => {
     await waitFor(() =>
       expect(screen.getByRole('heading', { level: 2, name: 'Not found' })).toBeTruthy(),
     )
-    // Since #730 the advice is actionable — a closed or merged item IS reachable through the
-    // search box — so the copy must point there rather than shrug "it may be closed".
     expect(document.querySelector('[data-slot="gh-detail"]')?.textContent).toContain(
-      'Search for 9999 above',
+      'GitHub did not return issue #9999',
     )
   })
 

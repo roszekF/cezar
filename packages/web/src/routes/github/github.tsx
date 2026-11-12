@@ -57,12 +57,13 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Skeleton } from '@/components/ui/skeleton'
 import { toast } from '@/components/ui/toaster'
 import { shortAge } from '@/lib/format'
+import { GithubRelatedTasks } from './related-tasks'
 import { githubTaskPrompt } from '@/lib/github-task'
 import { orderSkillsByUsage } from '@/lib/skills'
 import { cn, isHttpUrl } from '@/lib/utils'
 
 import { ImpactControl } from '../task-assets/impact-control'
-import { Markdown } from '../task-thread/markdown'
+import { GithubMarkdown as Markdown } from './github-markdown'
 import {
   allLabels,
   filterGithubItems,
@@ -311,6 +312,8 @@ export function GithubRoute({
         void queryClient.removeQueries({ queryKey: ['github', 'comments'] })
         return
       }
+      // Older deep-linked items live in the exact lookup cache, not the paged list.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.githubSearch(open.kind, `#${open.number}`), exact: true })
       const openKey = queryKeys.githubComments(open.kind, open.number)
       // Fire-and-forget rather than awaited in `mutationFn`: a thread fetch that fails must not
       // discard an already-successful list refresh.
@@ -420,6 +423,18 @@ export function GithubRoute({
   )
   const searchWanted = shouldSearchForge(debouncedQuery, localMatches)
   const forgeSearch = useGithubSearch(view === 'issues' ? 'issue' : 'pr', debouncedQuery, searchWanted)
+  // A deep link may precede the fetched page. Resolve its exact number independently of the
+  // list filters: finding #3 must not require paging through #149, or typing into Search first.
+  const selectedLookupWanted = gh?.available === true && selectedNumber !== null &&
+    Number.isSafeInteger(selectedNumber) && selectedNumber > 0 &&
+    !openItems.some((item) => item.number === selectedNumber)
+  const selectedLookup = useGithubSearch(
+    view === 'issues' ? 'issue' : 'pr',
+    selectedNumber === null ? '' : `#${selectedNumber}`,
+    selectedLookupWanted,
+  )
+  const selectedPayload = selectedLookupWanted && selectedLookup.data?.available ? selectedLookup.data : null
+
 
   // The bare `/github` restores the remembered sub-tab (#417). It lives HERE rather than in a
   // wrapper component so `/github` and `/github/issues/:n` render the same element type: React
@@ -514,7 +529,7 @@ export function GithubRoute({
     (searchWanted && forgeSearch.isPending)
   // A closed item often wears labels no open one does; its own colors win nothing over the repo
   // map, they only fill the gaps.
-  const labelColors = { ...(searchPayload?.labelColors ?? {}), ...(gh.labelColors ?? {}) }
+  const labelColors = { ...(selectedPayload?.labelColors ?? {}), ...(searchPayload?.labelColors ?? {}), ...(gh.labelColors ?? {}) }
   const labelOptions = allLabels(allItems)
   const number = n === undefined ? null : Number.parseInt(n, 10)
   // No URL selection → the first item, like the legacy tab (rendered, not navigated-to). The
@@ -525,13 +540,21 @@ export function GithubRoute({
     number === null
       ? (items[0] ?? searchHits[0] ?? null)
       : (allItems.find((item) => item.number === number) ??
-        searchHits.find((item) => item.number === number) ??
+        selectedPayload?.items.find((item) => item.number === number && item.kind === (view === 'issues' ? 'issue' : 'pr')) ??
+        (forgeSearch.data?.available ? forgeSearch.data.items.find((item) => item.number === number && item.kind === (view === 'issues' ? 'issue' : 'pr')) : undefined) ??
         null)
   // Feed the refresh mutation the thread that is genuinely rendered — including the no-`:n`
   // fallback to items[0], which is what the bare /github and /github/prs routes show.
   openThreadRef.current = selected ? { kind: selected.kind, number: selected.number } : null
 
   const listPath = view === 'issues' ? '/github' : '/github/prs'
+  const selectedLoading = selectedLookupWanted && selectedLookup.isPending
+  const selectedFailed = selectedLookupWanted && (selectedLookup.isError || selectedLookup.data?.available === false)
+  const selectedFailureReason = selectedLookup.data?.available === false
+    ? selectedLookup.data.reason ?? 'The lookup is unavailable.'
+    : selectedLookup.error instanceof Error ? selectedLookup.error.message : 'The lookup request failed.'
+  const selectedNoun = view === 'issues' ? 'issue' : forgePrNoun(forgeKind)
+
 
   // The forge was asked and could not answer. Two ways that happens, and only the first used to
   // be handled: the driver degraded in-payload (`available: false` + a reason), or the request
@@ -816,15 +839,13 @@ export function GithubRoute({
             icon={view === 'issues' ? <CircleDotIcon /> : <GitPullRequestIcon />}
             tone="neutral"
             heading="h2"
-            title={number === null ? 'Nothing selected' : 'Not found'}
-            subtitle={
-              number === null
-                ? `No open ${view === 'issues' ? 'issues' : prNoun} to show.`
-                : // Since #730 a closed or merged item IS reachable — type its number into the
-                  // search box and the tab asks GitHub directly — so the honest advice is to
-                  // search, not the old "it may be closed" shrug.
-                  `#${number} is not among the open ${view === 'issues' ? 'issues' : prNoun}. Search for ${number} above to look it up on ${forgeLabel(forgeKind)}, closed and merged included.`
-            }
+            title={number === null ? 'Nothing selected' : selectedLoading ? `Loading ${selectedNoun} #${number}…` : selectedFailed ? `Could not load ${selectedNoun} #${number}` : 'Not found'}
+            subtitle={number === null
+              ? `No open ${view === 'issues' ? 'issues' : prNoun} to show.`
+              : selectedLoading ? `Looking up #${number} on ${forgeLabel(forgeKind)}.`
+                : selectedFailed ? selectedFailureReason
+                  : `${forgeLabel(forgeKind)} did not return ${selectedNoun} #${number}. Check the number and your access to this project.`}
+            actions={selectedFailed ? <Button variant="outline" onClick={() => void selectedLookup.refetch()}>Try again</Button> : undefined}
           />
         )}
     </>} />
@@ -1144,6 +1165,9 @@ function GithubDetail({
 
       {children}
       </>}
+
+      {/* Outside the ternary: a PR's task history stays reachable from Changes too (#1048). */}
+      <GithubRelatedTasks item={item} />
     </article>
   )
 }

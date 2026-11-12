@@ -34,6 +34,12 @@ describe('parseGlabConfigHosts', () => {
     ]);
   });
 
+  it('recognizes a self-managed config authority with a custom HTTPS port', () => {
+    expect(parseGlabConfigHosts('host: git.corp.example:8443\nhosts:\n  "git.corp.example:8443":\n    api_protocol: https\n')).toEqual([
+      'git.corp.example', 'git.corp.example',
+    ]);
+  });
+
   it('stops at the next top-level key, and ignores comments and blank lines', () => {
     expect(parseGlabConfigHosts('hosts:\n    # a comment\n\n    a.example:\n        user: me\nnot_hosts:\n    b.example:\n')).toEqual([
       'a.example',

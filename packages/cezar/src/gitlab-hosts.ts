@@ -51,14 +51,16 @@ export function parseGlabConfigHosts(text: string): string[] {
       inHosts = /^hosts:\s*(?:#.*)?$/.test(line);
       childIndent = null;
       const top = /^host:\s*["']?([^"'\s#]+)["']?\s*(?:#.*)?$/.exec(line);
-      if (top?.[1]) hosts.push(top[1].toLowerCase());
+      const topHost = envHost(top?.[1]);
+      if (topHost) hosts.push(topHost);
       continue;
     }
     if (!inHosts) continue;
     childIndent ??= indent;
     if (indent !== childIndent) continue;
-    const m = /^\s+["']?([A-Za-z0-9][A-Za-z0-9.-]*)["']?:\s*(?:#.*)?$/.exec(line);
-    if (m?.[1]) hosts.push(m[1].toLowerCase());
+    const m = /^\s+["']?([A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?)["']?:\s*(?:#.*)?$/.exec(line);
+    const host = envHost(m?.[1]);
+    if (host) hosts.push(host);
   }
   return hosts;
 }

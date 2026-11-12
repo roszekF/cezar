@@ -1147,6 +1147,8 @@ describe('TasksOverview — mobile cards and FAB', () => {
     const fab = document.querySelector('[data-slot="new-task-fab"]')
     expect(fab?.getAttribute('href')).toBe('/new')
     expect(fab?.getAttribute('aria-label')).toBe('New task')
+    // Fixed to the viewport, so it has to clear the phone bottom bar itself.
+    expect(fab?.className).toContain('var(--phone-bar,0px)')
   })
 })
 
@@ -1609,6 +1611,15 @@ describe('TasksOverview — origin and facet filters', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Filter by automation' }))
     fireEvent.click(await screen.findByRole('option', { name: /Nightly sweep job/ }))
     expect(shownIds()).toEqual(['nightly'])
+  })
+
+  it('labels a deleted automation readably, never by its UUID (#2100)', async () => {
+    const names = new Map([['auto-nightly', 'Nightly sweep job']])
+    renderOverview({ runs: fixture(), origin: 'all', automationNames: names })
+    fireEvent.click(screen.getByRole('button', { name: 'Filter by automation' }))
+    const options = (await screen.findAllByRole('option')).map((o) => o.textContent ?? '')
+    expect(options.some((t) => /Removed automation · /.test(t))).toBe(true)
+    expect(options.some((t) => /^[0-9a-f-]{20,}/.test(t))).toBe(false)
   })
 
   it('hides the Automation facet under Regular, where it could only empty the table', () => {

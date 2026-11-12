@@ -13,6 +13,7 @@ import {
   useRemoveQueuedMessage,
   useRun,
   useProjectRepoBase,
+  useRunArtifacts,
   useRuns,
 } from '@/api/queries'
 import { useRunHistory, type RunHistoryState } from '@/api/run-history'
@@ -23,12 +24,11 @@ import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { toast } from '@/components/ui/toaster'
 import { useKeyboardInsetVar } from '@/lib/keyboard-inset'
-import { budgetStop, isAwaitingAnswer } from '@/lib/attention'
+import { budgetStop, isAwaitingAnswer, isIdleClosed } from '@/lib/attention'
 import { isUnread } from '@/lib/read-state'
 import { taskIssueUrl, taskPrUrl } from '@/lib/tasks-table'
 import { cn, isHttpUrl } from '@/lib/utils'
 
-import { ThreadArtifactCards } from '../task-assets/thread-artifact-cards'
 import { AutoResumeHint } from './auto-resume-hint'
 import { useFinishRun } from './use-finish-run'
 import { usePromoteRun, useStartRunNow } from './use-start-run-now'
@@ -56,6 +56,7 @@ import {
   SessionTranscript,
   buildTranscriptRows,
   mainTranscriptSections,
+  placeArtifactRows,
   type TranscriptMessageActions,
 } from './session-transcript'
 import {
@@ -199,7 +200,7 @@ export function ThreadView({
   /** A task-workspace column: the workspace draws the one run header above every column. */
   embedded?: boolean
 }) {
-  const footer = threadFooter(run.status, run.error, isAwaitingAnswer(run))
+  const footer = threadFooter(run.status, run.error, isAwaitingAnswer(run), isIdleClosed(run), thread)
   const markedUnread = useCallback(() => onMarkedUnread?.(run.id), [onMarkedUnread, run.id])
   // The dock's data: the latest plan snapshot across turns (full replacement — an emptied
   // plan hides the dock and the header mirror alike).
@@ -299,7 +300,11 @@ export function ThreadView({
   )
 
   const sections = useMemo(() => mainTranscriptSections(run, thread), [run, thread])
-  const rows = useMemo(() => buildTranscriptRows(sections, run.id), [sections, run.id])
+  const artifacts = useRunArtifacts(run.id).data?.artifacts
+  const rows = useMemo(
+    () => placeArtifactRows(buildTranscriptRows(sections, run.id), sections, artifacts ?? []),
+    [sections, run.id, artifacts],
+  )
   const renderAsk = useCallback((ask: ThreadAsk) => <AskCard ask={ask} run={run} />, [run])
   const messageActions = useMemo<Readonly<Record<string, TranscriptMessageActions>> | undefined>(() => {
     if (edit === undefined) return undefined
@@ -356,6 +361,7 @@ export function ThreadView({
             loading={history.isFetchingOlder}
             error={history.olderError}
             fallback={history.fallback}
+            fallbackTruncated={history.fallbackTruncated}
             retainedPages={history.retainedPages}
             onLoad={scroll.loadOlder}
           />
@@ -371,7 +377,6 @@ export function ThreadView({
           renderMode={mode}
           rowModels={rows}
         />
-        <ThreadArtifactCards runId={run.id} />
 
         {thread.turns.length === 0 ? (
           run.status === 'queued' ? (
@@ -648,6 +653,7 @@ function HistoryBoundary({
   loading,
   error,
   fallback,
+  fallbackTruncated,
   retainedPages,
   onLoad,
 }: {
@@ -655,13 +661,16 @@ function HistoryBoundary({
   loading: boolean
   error?: string
   fallback: boolean
+  fallbackTruncated?: boolean
   retainedPages: number
   onLoad: () => void
 }) {
   if (fallback) {
     return (
       <p data-slot="history-fallback" className="text-center text-xs text-soft-foreground" role="status">
-        Progressive history is unavailable; showing the complete session.
+        {fallbackTruncated
+          ? 'Progressive history is unavailable; showing only the most recent part of the session.'
+          : 'Progressive history is unavailable; showing the complete session.'}
       </p>
     )
   }

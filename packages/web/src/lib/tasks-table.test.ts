@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { ProcessUsage, RunRecord } from '@open-mercato/cezar-api-client'
 import {
   compareGroups,
+  relatedTasks,
   filterRuns,
   finishedRunCount,
   forgeRepoBase,
@@ -865,5 +866,14 @@ describe('taskCellMinWidth (#979)', () => {
     expect(taskCellMinWidth(0)).toBe(220)
     expect(taskCellMinWidth(1)).toBe(234)
     expect(taskCellMinWidth(2)).toBe(248)
+  })
+})
+
+
+describe('related GitLab tasks', () => {
+  it('uses the scoped forge base and excludes a different project with the same issue number', () => {
+    const local = run({ markerRefs: { issue: 14 } })
+    const foreign = run({ referencedIssueUrl: 'https://gitlab.local/group/other/-/issues/14' })
+    expect(relatedTasks([local, foreign], { kind: 'issue', number: 14 }, { base: 'https://gitlab.local/group/odb', kind: 'gitlab' })).toEqual([local])
   })
 })

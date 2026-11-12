@@ -1,6 +1,6 @@
 import { splitRemoteRef, type TaskRemotes } from '../../git-remotes.ts';
 import { autosaveCommit, taskRemotes } from '../../git-worktree.ts';
-import { baseDivergence } from '../git-changes.ts';
+import { baseDivergence, rewriteLeaseArg } from '../git-changes.ts';
 import { execTool } from './cli.ts';
 import type { DraftPrInput } from './types.ts';
 
@@ -83,7 +83,12 @@ export async function preparePublish(input: DraftPrInput): Promise<PublishPrelud
   const { ahead } = await baseDivergence(worktree, run.baseBranch);
   if (ahead === 0) return { kind: 'error', error: nothingToPropose(branch, prBase) };
 
-  const push = await execTool(['push', '-u', pushRemote, branch], worktree, 'git', PUSH_TIMEOUT_MS);
+  let push = await execTool(['push', '-u', pushRemote, branch], worktree, 'git', PUSH_TIMEOUT_MS);
+  if (!push.ok && /\[rejected\]|non-fast-forward/.test(push.stderr)) {
+    // Only lease a rebased branch against a tip this task previously held (#1758).
+    const lease = await rewriteLeaseArg(worktree, pushRemote, branch, [run.baseBranch, prBase]);
+    if (lease) push = await execTool(['push', lease, '-u', pushRemote, branch], worktree, 'git', PUSH_TIMEOUT_MS);
+  }
   if (!push.ok) {
     return { kind: 'error', error: `git push failed — ${tail(push.stderr) || 'unknown error'}` };
   }

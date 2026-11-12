@@ -124,6 +124,9 @@ const stepStateSchema = z.object({
   /** Canonical provider/model identity resolved for this step. Optional so older runs.json files
    *  remain readable and auto-model steps can retain an absent identity. */
   modelIdentity: z.string().optional(),
+  /** Raw model this turn was spawned with ('' = deliberately auto), so a continued turn keeps
+   *  the model of the step that owns its session (#1488). Absent on older records. */
+  model: z.string().optional(),
   /** Dollar cost reported by the claude CLI for this step's turns. */
   costUsd: z.number().optional(),
 });
@@ -321,6 +324,19 @@ export const runRecordSchema = z.object({
    */
   awaitingAnswerSince: z.string().datetime().optional().catch(undefined),
   /**
+   * When the inactivity timer closed a session nobody replied to and the run settled `failed`
+   * (spec 2026-11-04-idle-closed-attention-state). The cockpit paints it "closed · idle" instead
+   * of red. Same invariant as `awaitingAnswerSince`: only a `failed` run carries it.
+   */
+  idleClosedAt: z.string().datetime().optional().catch(undefined),
+  /**
+   * When the current wait on the user began: stamped by `updateRun` on entering `waiting` or on a
+   * new question while there, so a wait has an identity even without a question. It outlives the
+   * session on an unanswered question (`awaitingAnswerSince`), which is still the same wait, so a
+   * manager reports it once. Additive and optional (BACKWARD_COMPATIBILITY §3).
+   */
+  waitingSince: z.string().datetime().optional().catch(undefined),
+  /**
    * A run a `checkout: 'pr-head'` automation launched on a pull request's head (spec
    * 2026-10-06-agentic-e2e-checks Phase 3). `headSha` is what was fetched and tested — also the
    * run's `baseBranch` — and `ref` the namespaced `refs/cezar/pr/<n>` holding it. Its presence
@@ -438,6 +454,8 @@ export const runRecordSchema = z.object({
   /** In-place but a read-only Ask task (spec 2026-10-20-trunk-based-projects): no lease, no
    *  writes, no landing. */
   readOnly: z.literal(true).optional(),
+  /** With `readOnly`: a manager's task, which the backend enforces too (spec 2026-10-31-managers). */
+  enforceReadOnly: z.literal(true).optional(),
   /** The last auto-land of an in-place run (spec 2026-10-20-trunk-based-projects). */
   landing: z
     .object({
@@ -748,6 +766,7 @@ function isAccessDenied(err: unknown): boolean {
  */
 function clearAwaitingAnswer(run: RunRecord): void {
   run.awaitingAnswerSince = undefined;
+  run.waitingSince = undefined;
 }
 
 /**
@@ -1046,10 +1065,14 @@ export function reconcileLoadedRun(run: RunRecord, opts?: { keepLive?: boolean }
   ) {
     // A run parked on an unanswered `CEZ:ASK` still owes the user that question — the same
     // answer `RunManager.recover()` gives, so this reader and the manager agree on "needs you".
-    const askParked = run.status === 'waiting' && run.askParked === true;
+    const askParked = run.status === 'waiting' && (run.askParked === true || run.attentionRequest !== undefined);
+    // A wait has no `finishedAt`, and a cold read persists nothing: `now` would move on every read.
+    // A record from before `waitingSince` falls back to its last step, not its start.
+    const lastStepAt = run.steps.flatMap((step) => step.finishedAt ?? step.startedAt ?? []).sort().at(-1);
+    const stoppedAt = run.status === 'waiting' ? run.waitingSince ?? lastStepAt ?? run.startedAt ?? run.createdAt : new Date().toISOString();
     run.status = 'failed';
     run.error = 'interrupted — cezar process exited during the run';
-    run.finishedAt = run.finishedAt ?? new Date().toISOString();
+    run.finishedAt = run.finishedAt ?? stoppedAt;
     // Stamped from `finishedAt`, so every cold read of the same record agrees on the instant.
     if (askParked) run.awaitingAnswerSince = run.finishedAt;
     for (const step of run.steps) {
@@ -1066,6 +1089,8 @@ export function reconcileLoadedRun(run: RunRecord, opts?: { keepLive?: boolean }
   if (run.status !== 'failed') run.autoResumeAt = undefined;
   // Likewise an unanswered question only means anything on the `failed` run it stopped.
   if (run.status !== 'failed') run.awaitingAnswerSince = undefined;
+  if (run.status !== 'failed') run.idleClosedAt = undefined;
+  if (run.status !== 'waiting' && run.awaitingAnswerSince === undefined) run.waitingSince = undefined;
   // The wake counter is intentionally process-local, so a restarted process
   // starts a fresh epoch instead of displaying a stale cap.
   run.monitoringWakeCapReached = undefined;
@@ -1586,13 +1611,29 @@ export class RunStore extends EventEmitter {
     // Continue that answers it (`running`/`queued`), and every settlement, retire it.
     if (normalized.status && normalized.status !== 'failed') {
       normalized.awaitingAnswerSince = undefined;
+      normalized.idleClosedAt = undefined;
+    }
+    // Stamped here so no park site can forget it; every wait reaches the record through this line.
+    if (resultingStatus === 'waiting') {
+      const requestId = 'attentionRequest' in normalized ? normalized.attentionRequest?.requestId : run.attentionRequest?.requestId;
+      if (run.status !== 'waiting' || run.waitingSince === undefined || requestId !== run.attentionRequest?.requestId) {
+        normalized.waitingSince = new Date().toISOString();
+      }
+    } else if (('awaitingAnswerSince' in normalized ? normalized.awaitingAnswerSince : run.awaitingAnswerSince) === undefined) {
+      normalized.waitingSince = undefined;
     }
     // Seed the list from the old values BEFORE applying a patch. Callers that update a scalar
     // projection often provide the replacement URL/number in the same patch; seeding afterward
     // would make the historical association unrecoverable.
     if (!run.prRefs && !normalized.prRefs) run.prRefs = legacyPrRefs(run);
     // Counted on the transition only (#1438); an auto-resumed attempt failing again repeats a failure already counted.
-    if (normalized.status === 'failed' && run.status !== 'failed' && run.autoResumeAttempts === undefined) {
+    // An idle close is not a failure (spec 2026-11-04-idle-closed-attention-state).
+    if (
+      normalized.status === 'failed' &&
+      run.status !== 'failed' &&
+      run.autoResumeAttempts === undefined &&
+      normalized.idleClosedAt === undefined
+    ) {
       const kind = failureKind(normalized.error ?? run.error);
       if (kind) track('task_failed', { label: taskFailedLabel(run.runner, kind) });
     }
@@ -1653,7 +1694,7 @@ export class RunStore extends EventEmitter {
   }
 
   /** Append a step to an existing run (used by "Continue" — spec 003). */
-  addStep(runId: string, step: Pick<StepState, 'id' | 'name' | 'kind'>): void {
+  addStep(runId: string, step: Pick<StepState, 'id' | 'name' | 'kind'> & Partial<Pick<StepState, 'model'>>): void {
     const run = this.runs.get(runId);
     if (!run || run.steps.some((s) => s.id === step.id)) return;
     run.steps.push({ ...step, status: 'pending', iterations: 0, tokensUsed: 0 });
@@ -2353,6 +2394,8 @@ export class RunStore extends EventEmitter {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
     const pinned = new Set<string>();
     for (const run of runs) {
+      // Pruning the record would also orphan a pinned task's worktree for the next sweep.
+      if (run.pinned) pinned.add(run.id);
       if (!LIVE_STATUSES.has(run.status)) continue;
       pinned.add(run.id);
       if (run.dispatch?.parentRunId) pinned.add(run.dispatch.parentRunId);

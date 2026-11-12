@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { hashKey, useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { mergeProviderStatusResponse } from '@/lib/provider-status'
@@ -1648,8 +1648,12 @@ export function useSkills(enabled = true) {
   useEffect(() => {
     // Treat the follow-up as best-effort. The fast catalog remains authoritative
     // if an older server/proxy answers this additive request unexpectedly.
-    if (Array.isArray(ready.data)) queryClient.setQueryData([skillsScope, 'skills'], ready.data)
-  }, [queryClient, ready.data, skillsScope])
+    if (!Array.isArray(ready.data)) return
+    // Never let a cached snapshot replace a newer catalog (a later mount after Refresh, #1904).
+    const catalogUpdatedAt = queryClient.getQueryState([skillsScope, 'skills'])?.dataUpdatedAt ?? 0
+    if (ready.dataUpdatedAt < catalogUpdatedAt) return
+    queryClient.setQueryData([skillsScope, 'skills'], ready.data)
+  }, [queryClient, ready.data, ready.dataUpdatedAt, skillsScope])
 
   return skills
 }
@@ -1895,26 +1899,37 @@ export function useSaveAgentFallbackPolicy(projectId: string | null) {
   })
 }
 
-/** The chip's refresh cadence — matches the server's `STAR_CACHE_TTL_MS`, which also paces
- *  itself to GitHub's rate limit, so a poll never costs more than one cached read. */
-export const STAR_COUNT_REFRESH_MS = 10_000
+/** How old the count may get before the next re-read — matches the server's `STAR_CACHE_TTL_MS`. */
+export const STAR_COUNT_REFRESH_MS = 15 * 60_000
 
 /**
- * cezar's own star count, for the sidebar's ⭐ ask — refreshed every ten seconds while the tab is
- * visible (TanStack pauses `refetchInterval` in the background). No retry: the server answers
- * `{ available: false }` for every failure, and the next tick is the retry.
+ * cezar's own star count, for the sidebar's ⭐ ask. No timer of its own: once the count is
+ * fifteen minutes old, it is re-read only when some other query finishes a fetch, so a cockpit
+ * making no requests asks for nothing. No retry: the server answers `{ available: false }` for
+ * every failure, and the next piggybacked read is the retry.
  */
 export function useStarCount(enabled = true) {
-  return useQuery({
-    queryKey: workspaceQueryKeys.starCount,
-    queryFn: ({ signal }) => getStarCount({ signal }),
-    enabled,
-    staleTime: STAR_COUNT_REFRESH_MS,
-    refetchInterval: STAR_COUNT_REFRESH_MS,
-    retry: false,
-    refetchOnMount: false,
-  })
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    if (!enabled) return
+    return queryClient.getQueryCache().subscribe((event) => {
+      // A real fetch only — `setQueryData` (SSE patches) is `manual` and is not a request.
+      if (event.type !== 'updated' || event.action.type !== 'success' || event.action.manual) return
+      if (event.query.queryHash === starCountQueryHash) return
+      // Skips the request while the cached count is younger than `staleTime`.
+      void queryClient.prefetchQuery(starCountQueryOptions)
+    })
+  }, [enabled, queryClient])
+  return useQuery({ ...starCountQueryOptions, enabled, refetchOnMount: false })
 }
+
+const starCountQueryOptions = {
+  queryKey: workspaceQueryKeys.starCount,
+  queryFn: ({ signal }: { signal: AbortSignal }) => getStarCount({ signal }),
+  staleTime: STAR_COUNT_REFRESH_MS,
+  retry: false,
+} as const
+const starCountQueryHash = hashKey(workspaceQueryKeys.starCount)
 
 /** The opt-in telemetry answer. Read by the consent bar and Settings → Privacy; both write
  *  through `putTelemetryConsent` and set this cache from the answer. */

@@ -17,7 +17,7 @@ import type * as React from 'react'
 import type { ForgeKind, ReferenceStatus } from '@open-mercato/cezar-api-client'
 
 import { useReferenceForge, useReferenceStatus } from '@/components/reference-status'
-import { forgeLabel } from '@/lib/forge-display'
+import { forgeLabel, forgePrNoun } from '@/lib/forge-display'
 import type { ReferenceStatusEntry } from '@/api/queries'
 import { StatusDot } from '@/components/status-dot'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
@@ -168,7 +168,7 @@ export function ReferenceChip({
     conflicting ? statusPresentation : undefined,
   )
   const label = number ? `${!compact && kind === 'Issue' ? 'Issue ' : ''}#${number}` : kind
-  const kindWord = kind === 'PR' ? 'pull request' : 'issue'
+  const kindWord = kind === 'PR' ? forgePrNoun(forge === undefined ? surfaceForge : forge) : 'issue'
   // The accessible name carries the status too — a screen reader gets what the color says.
   const ariaLabel = `Open the ${kindWord} for ${taskTitle}${presentation ? ` — ${presentation.label}` : ''}`
 

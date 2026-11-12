@@ -108,9 +108,16 @@ describe('the GitHub merge API', () => {
     expect(await merge.json()).toEqual({ error: 'Merging from cezar is not supported for GitLab merge requests' });
   });
 
-  it('keeps the original text when no forge resolves', async () => {
-    execFileSync('git', ['remote', 'remove', 'origin'], { cwd: repoRoot });
-    const state = await apiRequest(app, '/api/v1/github/prs/128/merge-state');
-    expect(await state.json()).toEqual({ available: false, reason: 'GitHub merge state is unavailable' });
+  it('keeps the original text when no forge resolves outside dry run', async () => {
+    const dryRun = process.env.CEZ_DRY_RUN;
+    process.env.CEZ_DRY_RUN = '';
+    try {
+      execFileSync('git', ['remote', 'remove', 'origin'], { cwd: repoRoot });
+      const state = await apiRequest(app, '/api/v1/github/prs/128/merge-state');
+      expect(await state.json()).toEqual({ available: false, reason: 'GitHub merge state is unavailable' });
+    } finally {
+      if (dryRun === undefined) delete process.env.CEZ_DRY_RUN;
+      else process.env.CEZ_DRY_RUN = dryRun;
+    }
   });
 });
